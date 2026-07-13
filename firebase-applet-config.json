@@ -1,10 +1,9 @@
 {
-  "projectId": "turnkey-shell-qn50x",
-  "appId": "1:443847551442:web:340e74247613093487c00b",
-  "apiKey": "AIzaSyAnWo4G0FKzIRDs0AShq5eN5boMqpA60qc",
-  "authDomain": "turnkey-shell-qn50x.firebaseapp.com",
-  "storageBucket": "turnkey-shell-qn50x.firebasestorage.app",
-  "messagingSenderId": "443847551442",
-  "measurementId": "",
-  "oAuthClientId": "443847551442-231jc5rpglrfune93gf1g31ug9gk36cv.apps.googleusercontent.com"
-}
+  apiKey: "AIzaSyBzS1Djf2SE8gftuu4aMM-eflF44kRQt6g",
+  authDomain: "my-exam-system-84898.firebaseapp.com",
+  projectId: "my-exam-system-84898",
+  storageBucket: "my-exam-system-84898.firebasestorage.app",
+  messagingSenderId: "640449898227",
+  appId: "1:640449898227:web:e096aec9ed7dc87b6b3986",
+  measurementId: "G-5NW871CKNF"
+};
