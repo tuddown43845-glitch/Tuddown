@@ -748,7 +748,7 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
     initAuth(() => setAuthInitialized(true), () => setAuthInitialized(true));
   }, []);
 
-  const handleImportSheet = async () => {
+ const handleImportSheet = async () => {
     try {
       setIsImporting(true);
       let token = await getAccessToken();
@@ -761,48 +761,28 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
 
       const spreadsheetId = '1OUHJLzvzj6_qhPPCjv-_g4lwBl8EueHETYPrO2Ikpdk';
 
-      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A2:E`, {
+      // ดึงข้อมูลทุกอย่างในชีตแรก (Sheet1)
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Sheet1!A2:E200`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
       
-      if (data.values && data.values.length > 0) {
+      // ดึงมาแบบดิบๆ เพื่อให้เห็นข้อมูลก่อน
+      if (data.values) {
         const newStudents = data.values.map((row: any[]) => ({
-          id: row[4] ? row[4].toString().trim() : '',
-          name: row[3] ? row[3].toString().trim() : '',
-          class: row[2] ? row[2].toString().replace('ม.', '').trim() : '',
-          number: row[1] ? parseInt(row[1], 10) : 0
-        })).filter((s: any) => s.id !== '' && s.id !== 'รหัสนักเรียน');
-
-        if (newStudents.length > 0) {
-          const studentMap = new Map<string, Student>(students.map((s: Student) => [s.id, s]));
-          let added = 0;
-          let updated = 0;
-
-          newStudents.forEach((newS: Student) => {
-            if (studentMap.has(newS.id)) {
-              const existing = studentMap.get(newS.id);
-              if (existing!.name !== newS.name || existing!.class !== newS.class || existing!.number !== newS.number) {
-                updated++;
-                studentMap.set(newS.id, newS);
-              }
-            } else {
-              added++;
-              studentMap.set(newS.id, newS);
-            }
-          });
-
-          setStudents(Array.from(studentMap.values()));
-          alert(`นำเข้านักเรียนสำเร็จ เพิ่มใหม่ ${added} คน, อัปเดตข้อมูล ${updated} คน`);
-        } else {
-          alert('ไม่พบข้อมูลนักเรียน หรือรูปแบบตารางไม่ถูกต้อง');
-        }
+          number: row[0] || 0, // ปรับ index ถ้าข้อมูลอยู่คอลัมน์ A (index 0)
+          class: row[1] || '',
+          name: row[2] || '',
+          id: row[3] || ''
+        }));
+        
+        setStudents(newStudents);
+        alert(`นำเข้าสำเร็จ! พบข้อมูล ${newStudents.length} แถว`);
       } else {
-        alert('ไม่พบข้อมูลในตาราง โปรดตรวจสอบว่าได้แชร์ไฟล์แบบ "Viewer" แล้ว');
+        alert('ไม่พบข้อมูลใน Sheet1! ตรวจสอบว่าชื่อแท็บคือ "Sheet1" จริงๆ');
       }
     } catch (err: any) {
-      console.error(err);
-      alert('เกิดข้อผิดพลาดในการนำเข้าข้อมูล: ' + err.message);
+      alert('เกิดข้อผิดพลาด: ' + err.message);
     } finally {
       setIsImporting(false);
     }
