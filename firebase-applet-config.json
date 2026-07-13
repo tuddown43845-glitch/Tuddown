@@ -1,4 +1,4 @@
-{
+const firebaseConfig = {
   apiKey: "AIzaSyBzS1Djf2SE8gftuu4aMM-eflF44kRQt6g",
   authDomain: "my-exam-system-84898.firebaseapp.com",
   projectId: "my-exam-system-84898",
