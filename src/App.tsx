@@ -156,7 +156,7 @@ export default function App() {
         <StudentInfoView 
           student={currentUser} 
           onStart={(cls) => {
-            setCurrentUser({...currentUser, class: cls});
+            setCurrentUser({...currentUser, class: cls}); // Ensure correct class
             setCurrentView('exam');
           }} 
           onLogout={handleLogout}
@@ -368,7 +368,9 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
 
   // Initialize and Shuffle
   useEffect(() => {
+    // 1. Shuffle questions
     const randMcqs = shuffleArray(mcqs).map(q => {
+      // 2. Shuffle options for each question
       const origCorrectText = q.options[q.correctIndex];
       const randOptions = shuffleArray(q.options);
       return {
@@ -399,11 +401,13 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
   // Anti-Cheat (Keyboard preventions)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Prevent Ctrl+C / Cmd+C / Ctrl+V / Cmd+V
       if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C' || e.key === 'v' || e.key === 'V')) {
         e.preventDefault();
       }
     };
     
+    // Global copy/paste protection for this view
     const handleCopy = (e: ClipboardEvent) => e.preventDefault();
     
     document.addEventListener('keydown', handleKeyDown);
@@ -420,6 +424,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
       if (isTerminated) return;
       
       const now = Date.now();
+      // Debounce: prevent multiple triggers within 2 seconds
       if (now - lastCheatTime.current < 2000) return;
       lastCheatTime.current = now;
 
@@ -436,6 +441,8 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
       });
     };
 
+    // Note: window.blur is disabled here because in an iframe environment (like AI Studio)
+    // clicking outside the iframe (e.g. on the chat) triggers blur, causing false positives.
     const handleVisibility = () => {
       if (document.visibilityState === 'hidden') handleViolation();
     };
@@ -467,6 +474,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
   const executeSubmit = () => {
     const timeTakenMs = Date.now() - startTime.current;
     
+    // Calculate score
     let score = 0;
     shuffledMcqs.forEach(q => {
       if (mcqAnswers[q.id] === q.originalCorrectText) {
@@ -509,6 +517,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
       onContextMenu={(e) => e.preventDefault()}
       onCopy={(e) => e.preventDefault()}
     >
+      {/* Header */}
       <div className="bg-white rounded-xl shadow-sm border border-[#E3D5CA] p-4 flex justify-between items-center mb-6 sticky top-4 z-10">
         <div>
           <div className="font-bold text-[#4A3B32]">ม.{student.class} เลขที่ {student.number}</div>
@@ -548,6 +557,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
         </div>
       )}
 
+      {/* Main Content */}
       <div className="bg-white rounded-xl shadow-sm border border-[#E3D5CA] p-8 min-h-[500px] flex flex-col">
         {currentType === 'mcq' ? (
           <>
@@ -597,6 +607,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
           </>
         )}
 
+        {/* Footer Navigation */}
         <div className="flex justify-between items-center mt-8 pt-6 border-t border-[#F5EBE4]">
           <button 
             onClick={() => {
@@ -748,7 +759,7 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
     initAuth(() => setAuthInitialized(true), () => setAuthInitialized(true));
   }, []);
 
- const handleImportSheet = async () => {
+  const handleImportSheet = async () => {
     try {
       setIsImporting(true);
       let token = await getAccessToken();
@@ -759,30 +770,77 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
       
       if (!token) throw new Error("Authentication failed");
 
-      const spreadsheetId = '1OUHJLzvzj6_qhPPCjv-_g4lwBl8EueHETYPrO2Ikpdk';
+      // The sheet ID from user's URL
+      const spreadsheetId = '1OuHJlzvzj6_qhPPCjv-_g4lwBl8EueHETYPrO2Ikpdk';
 
-      // ดึงข้อมูลทุกอย่างในชีตแรก (Sheet1)
-      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Sheet1!A2:E200`, {
+      const fileMetaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=mimeType`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      const data = await res.json();
+      const fileMeta = await fileMetaRes.json();
       
-      // ดึงมาแบบดิบๆ เพื่อให้เห็นข้อมูลก่อน
-      if (data.values) {
-        const newStudents = data.values.map((row: any[]) => ({
-          number: row[0] || 0, // ปรับ index ถ้าข้อมูลอยู่คอลัมน์ A (index 0)
-          class: row[1] || '',
-          name: row[2] || '',
-          id: row[3] || ''
-        }));
-        
-        setStudents(newStudents);
-        alert(`นำเข้าสำเร็จ! พบข้อมูล ${newStudents.length} แถว`);
+      let newStudents: Student[] = [];
+
+      if (fileMeta.mimeType === 'application/vnd.google-apps.spreadsheet') {
+        // Native Google Sheets
+        const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A2:E`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (data.values) {
+          newStudents = data.values.map((row: any[]) => ({
+            id: row[4] ? row[4].toString().trim() : '',
+            name: row[3] ? row[3].toString().trim() : '',
+            class: row[2] ? row[2].toString().replace('ม.', '').trim() : '',
+            number: row[1] ? (parseInt(row[1], 10) || 0) : 0
+          })).filter((s: any) => s.id && s.name);
+        }
       } else {
-        alert('ไม่พบข้อมูลใน Sheet1! ตรวจสอบว่าชื่อแท็บคือ "Sheet1" จริงๆ');
+        // Excel file (.xlsx) or other binary format viewed in Drive
+        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}?alt=media`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const arrayBuffer = await res.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+        
+        // Skip header (row 0), and map the same columns
+        newStudents = data.slice(1).map((row: any[]) => ({
+          id: row[4] ? row[4].toString().trim() : '',
+          name: row[3] ? row[3].toString().trim() : '',
+          class: row[2] ? row[2].toString().replace('ม.', '').trim() : '',
+          number: row[1] ? (parseInt(row[1], 10) || 0) : 0
+        })).filter((s: any) => s.id && s.name);
+      }
+      
+      if (newStudents.length > 0) {
+        // Merge with existing, updating matches by ID and adding new ones
+        const studentMap = new Map<string, Student>(students.map((s: Student) => [s.id, s]));
+        let added = 0;
+        let updated = 0;
+        
+        newStudents.forEach((newS: Student) => {
+          if (studentMap.has(newS.id)) {
+            const existing = studentMap.get(newS.id);
+            if (existing!.name !== newS.name || existing!.class !== newS.class || existing!.number !== newS.number) {
+              updated++;
+              studentMap.set(newS.id, newS);
+            }
+          } else {
+            added++;
+            studentMap.set(newS.id, newS);
+          }
+        });
+        
+        setStudents(Array.from(studentMap.values()));
+        alert(`นำเข้านักเรียนสำเร็จ เพิ่มใหม่ ${added} คน, อัปเดตข้อมูล ${updated} คน`);
+      } else {
+        alert('ไม่พบข้อมูลนักเรียน หรือรูปแบบตารางไม่ถูกต้อง (ต้องมีคอลัมน์ ลำดับ, เลขที่, ระดับชั้น, ชื่อ-นามสกุล, รหัสนักเรียน)');
       }
     } catch (err: any) {
-      alert('เกิดข้อผิดพลาด: ' + err.message);
+      console.error(err);
+      alert('เกิดข้อผิดพลาดในการนำเข้าข้อมูล: ' + err.message);
     } finally {
       setIsImporting(false);
     }
@@ -797,7 +855,7 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
         if (result) token = result.accessToken;
       }
       if (token) {
-        const spreadsheetId = '1Bt9tuUiXmmBH99Ij0m3-Z3hG7V31Ua-i';
+        const spreadsheetId = '1OuHJlzvzj6_qhPPCjv-_g4lwBl8EueHETYPrO2Ikpdk';
         await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:E:append?valueInputOption=USER_ENTERED`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -928,6 +986,8 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
     const file = e.target.files?.[0];
     if (!file) return;
     
+    // In iframe environments, window.prompt might be blocked. 
+    // We will use 'ทั้งหมด' as default. Users can edit later or use text import for custom class groups.
     const targetClass = 'ทั้งหมด';
     
     const reader = new FileReader();
@@ -936,6 +996,15 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
         const arrayBuffer = event.target?.result as ArrayBuffer;
         const result = await mammoth.extractRawText({ arrayBuffer });
         const text = result.value;
+        
+        // Simple heuristic parser:
+        // 1. Question?
+        // ก. option
+        // ข. option
+        // ค. option
+        // ง. option
+        // จ. option
+        // Answer: ก
         
         const lines = text.split('\n').map(l => l.trim().replace(/[\u200B-\u200D\uFEFF]/g, '')).filter(Boolean);
         const parsedMcqs: MCQ[] = [];
