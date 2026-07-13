@@ -1,9 +1,9 @@
-const firebaseConfig = {
-  apiKey: "AIzaSyBzS1Djf2SE8gftuu4aMM-eflF44kRQt6g",
-  authDomain: "my-exam-system-84898.firebaseapp.com",
-  projectId: "my-exam-system-84898",
-  storageBucket: "my-exam-system-84898.firebasestorage.app",
-  messagingSenderId: "640449898227",
-  appId: "1:640449898227:web:e096aec9ed7dc87b6b3986",
-  measurementId: "G-5NW871CKNF"
-};
+{
+  "apiKey": "AIzaSyBzS1Djf2SE8gftuu4aMM-eflF44kRQt6g",
+  "authDomain": "my-exam-system-84898.firebaseapp.com",
+  "projectId": "my-exam-system-84898",
+  "storageBucket": "my-exam-system-84898.firebasestorage.app",
+  "messagingSenderId": "640449898227",
+  "appId": "1:640449898227:web:e096aec9ed7dc87b6b3986",
+  "measurementId": "G-5NW871CKNF"
+}
