@@ -158,6 +158,8 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<Student | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [currentView, setCurrentView] = useState<'instructions' | 'login' | 'student-info' | 'exam' | 'result' | 'admin'>('instructions');
+  // เก็บผลการสอบครั้งที่เพิ่งส่งโดยตรง ป้องกันหน้าสรุปหยิบผลเก่าของนักเรียนคนเดิม
+  const [currentSubmission, setCurrentSubmission] = useState<Submission | null>(null);
 
   const [remoteStatus, setRemoteStatus] = useState<Record<SharedCollectionName, RemoteStatus>>({
     students: 'loading',
@@ -339,6 +341,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    setCurrentSubmission(null);
     setCurrentUser(null);
     setIsAdmin(false);
     setCurrentView('login');
@@ -352,6 +355,7 @@ export default function App() {
         <StudentInfoView 
           student={currentUser} 
           onStart={(cls) => {
+            setCurrentSubmission(null);
             setCurrentUser({...currentUser, class: cls}); // Ensure correct class
             setCurrentView('exam');
           }} 
@@ -364,15 +368,17 @@ export default function App() {
           mcqs={mcqs.filter(m => m.classGroup === 'ทั้งหมด' || m.classGroup === 'all' || m.classGroup.includes(currentUser.class))}
           subjs={subjs.filter(s => s.classGroup === 'ทั้งหมด' || s.classGroup === 'all' || s.classGroup.includes(currentUser.class))}
           onFinish={(sub) => {
+            // ใช้ผลสอบครั้งนี้แสดงในหน้าสรุปทันที ไม่ค้นจากประวัติผลสอบทั้งหมด
+            setCurrentSubmission(sub);
             saveSubmissions([...submissions, sub]);
             setCurrentView('result');
           }}
         />
       )}
-      {currentView === 'result' && currentUser && (
+      {currentView === 'result' && currentUser && currentSubmission && (
         <ResultView 
           student={currentUser} 
-          submission={submissions.find(s => s.studentId === currentUser.id)!}
+          submission={currentSubmission}
           mcqs={mcqs}
           subjs={subjs}
           onLogout={handleLogout}
