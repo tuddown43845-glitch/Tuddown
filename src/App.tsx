@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload } from 'lucide-react';
-import { googleSignIn, getAccessToken } from './firebase';
+import { replaceSharedCollection, subscribeSharedCollection, upsertSharedItems, type SharedCollectionName } from './firebase';
 import mammoth from 'mammoth';
 
 // --- TYPES ---
@@ -124,49 +124,199 @@ const loadPublicGoogleSheet = (spreadsheetId: string, gid = '0'): Promise<any> =
   });
 };
 
+// อ่านข้อมูลสำรองจากเครื่องนี้ เฉพาะช่วงที่ฐานข้อมูลกลางยังว่าง
+function readLocalArray<T>(key: string, fallback: T[]): T[] {
+  try {
+    const saved = localStorage.getItem(key);
+    if (!saved) return fallback;
+    const parsed = JSON.parse(saved);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+type RemoteStatus = 'loading' | 'ready' | 'empty' | 'error';
+
 // --- APP COMPONENT ---
 export default function App() {
-  // DB State (LocalStorage)
-  const [students, setStudents] = useState<Student[]>([]);
-  const [mcqs, setMcqs] = useState<MCQ[]>([]);
-  const [subjs, setSubjs] = useState<Subjective[]>([]);
-  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  // เริ่มจากข้อมูลในเครื่องนี้ก่อน แล้ว Firestore จะส่งข้อมูลกลางมาแทนที่ทันที
+  const [students, setStudents] = useState<Student[]>(() =>
+    readLocalArray('social_students', INITIAL_STUDENTS),
+  );
+  const [mcqs, setMcqs] = useState<MCQ[]>(() =>
+    readLocalArray('social_mcqs', INITIAL_MCQS),
+  );
+  const [subjs, setSubjs] = useState<Subjective[]>(() =>
+    readLocalArray('social_subjs', INITIAL_SUBJS),
+  );
+  const [submissions, setSubmissions] = useState<Submission[]>(() =>
+    readLocalArray('social_submissions', []),
+  );
 
   // Auth State
   const [currentUser, setCurrentUser] = useState<Student | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [currentView, setCurrentView] = useState<'instructions' | 'login' | 'student-info' | 'exam' | 'result' | 'admin'>('instructions');
 
-  // Load Data
-  useEffect(() => {
-    const s = localStorage.getItem('social_students');
-    const m = localStorage.getItem('social_mcqs');
-    const sj = localStorage.getItem('social_subjs');
-    const sm = localStorage.getItem('social_submissions');
+  const [remoteStatus, setRemoteStatus] = useState<Record<SharedCollectionName, RemoteStatus>>({
+    students: 'loading',
+    mcqs: 'loading',
+    subjs: 'loading',
+    submissions: 'loading',
+  });
 
-    if (s) setStudents(JSON.parse(s)); else setStudents(INITIAL_STUDENTS);
-    if (m) setMcqs(JSON.parse(m)); else setMcqs(INITIAL_MCQS);
-    if (sj) setSubjs(JSON.parse(sj)); else setSubjs(INITIAL_SUBJS);
-    if (sm) setSubmissions(JSON.parse(sm));
+  const hadLocalData = useRef<Record<SharedCollectionName, boolean>>({
+    students: Boolean(localStorage.getItem('social_students')),
+    mcqs: Boolean(localStorage.getItem('social_mcqs')),
+    subjs: Boolean(localStorage.getItem('social_subjs')),
+    submissions: Boolean(localStorage.getItem('social_submissions')),
+  });
+  const migrationStarted = useRef<Record<SharedCollectionName, boolean>>({
+    students: false,
+    mcqs: false,
+    subjs: false,
+    submissions: false,
+  });
+
+  const updateRemoteStatus = (name: SharedCollectionName, status: RemoteStatus) => {
+    setRemoteStatus((previous) => ({ ...previous, [name]: status }));
+  };
+
+  // รับข้อมูลกลางแบบเรียลไทม์ ทุกเครื่องจึงเห็นข้อสอบชุดเดียวกัน
+  useEffect(() => {
+    const subscriptions = [
+      subscribeSharedCollection<Student>(
+        'students',
+        (data) => {
+          updateRemoteStatus('students', data.length > 0 ? 'ready' : 'empty');
+          if (data.length > 0) {
+            setStudents(data);
+            localStorage.setItem('social_students', JSON.stringify(data));
+          }
+        },
+        (error) => {
+          console.error('Firestore students error:', error);
+          updateRemoteStatus('students', 'error');
+        },
+      ),
+      subscribeSharedCollection<MCQ>(
+        'mcqs',
+        (data) => {
+          updateRemoteStatus('mcqs', data.length > 0 ? 'ready' : 'empty');
+          if (data.length > 0) {
+            setMcqs(data);
+            localStorage.setItem('social_mcqs', JSON.stringify(data));
+          }
+        },
+        (error) => {
+          console.error('Firestore mcqs error:', error);
+          updateRemoteStatus('mcqs', 'error');
+        },
+      ),
+      subscribeSharedCollection<Subjective>(
+        'subjs',
+        (data) => {
+          updateRemoteStatus('subjs', data.length > 0 ? 'ready' : 'empty');
+          if (data.length > 0) {
+            setSubjs(data);
+            localStorage.setItem('social_subjs', JSON.stringify(data));
+          }
+        },
+        (error) => {
+          console.error('Firestore subjs error:', error);
+          updateRemoteStatus('subjs', 'error');
+        },
+      ),
+      subscribeSharedCollection<Submission>(
+        'submissions',
+        (data) => {
+          updateRemoteStatus('submissions', data.length > 0 ? 'ready' : 'empty');
+          setSubmissions(data);
+          localStorage.setItem('social_submissions', JSON.stringify(data));
+        },
+        (error) => {
+          console.error('Firestore submissions error:', error);
+          updateRemoteStatus('submissions', 'error');
+        },
+      ),
+    ];
+
+    return () => subscriptions.forEach((unsubscribe) => unsubscribe());
   }, []);
 
-  // Save Data Helpers
+  const showSyncError = (label: string, error: unknown) => {
+    console.error(`Firestore ${label} sync error:`, error);
+    const message = error instanceof Error ? error.message : String(error);
+    alert(`บันทึก ${label} ลงฐานข้อมูลกลางไม่สำเร็จ\n\n${message}`);
+  };
+
+  // Save Data Helpers: บันทึกทั้งในเครื่องและฐานข้อมูลกลาง
   const saveSubmissions = (data: Submission[]) => {
     setSubmissions(data);
     localStorage.setItem('social_submissions', JSON.stringify(data));
+    void upsertSharedItems('submissions', data).catch((error) =>
+      showSyncError('ผลสอบ', error),
+    );
   };
   const saveStudents = (data: Student[]) => {
     setStudents(data);
     localStorage.setItem('social_students', JSON.stringify(data));
+    void replaceSharedCollection('students', data).catch((error) =>
+      showSyncError('รายชื่อนักเรียน', error),
+    );
   };
   const saveMcqs = (data: MCQ[]) => {
     setMcqs(data);
     localStorage.setItem('social_mcqs', JSON.stringify(data));
+    void replaceSharedCollection('mcqs', data).catch((error) =>
+      showSyncError('ข้อสอบปรนัย', error),
+    );
   };
   const saveSubjs = (data: Subjective[]) => {
     setSubjs(data);
     localStorage.setItem('social_subjs', JSON.stringify(data));
+    void replaceSharedCollection('subjs', data).catch((error) =>
+      showSyncError('ข้อสอบอัตนัย', error),
+    );
   };
+
+  // ครั้งแรกที่ผู้ดูแลเปิดระบบ จะย้ายข้อสอบชุดใหม่จากเครื่องเดิมขึ้นฐานข้อมูลกลาง
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const migrate = async <T extends { id: string }>(
+      name: SharedCollectionName,
+      data: T[],
+      mode: 'replace' | 'upsert',
+    ) => {
+      if (
+        remoteStatus[name] !== 'empty' ||
+        !hadLocalData.current[name] ||
+        migrationStarted.current[name] ||
+        data.length === 0
+      ) {
+        return;
+      }
+
+      migrationStarted.current[name] = true;
+      try {
+        if (mode === 'replace') {
+          await replaceSharedCollection(name, data);
+        } else {
+          await upsertSharedItems(name, data);
+        }
+      } catch (error) {
+        migrationStarted.current[name] = false;
+        showSyncError('ข้อมูลเดิม', error);
+      }
+    };
+
+    void migrate('students', students, 'replace');
+    void migrate('mcqs', mcqs, 'replace');
+    void migrate('subjs', subjs, 'replace');
+    void migrate('submissions', submissions, 'upsert');
+  }, [isAdmin, remoteStatus, students, mcqs, subjs, submissions]);
 
   const handleLogin = (id: string, pass: string) => {
     if (id === 'TD43845' && pass === 'Natdanai43845') {
@@ -239,6 +389,7 @@ export default function App() {
           subjs={subjs}
           setSubjs={saveSubjs}
           onLogout={handleLogout}
+          databaseStatus={remoteStatus}
         />
       )}
     </div>
@@ -774,7 +925,7 @@ function ResultView({ student, submission, mcqs, subjs, onLogout }: { student: S
 }
 
 // --- ADMIN VIEW ---
-function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmissions, subjs, setSubjs, onLogout }: any) {
+function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmissions, subjs, setSubjs, onLogout, databaseStatus }: any) {
   const [tab, setTab] = useState<'students' | 'mcqs' | 'subjs' | 'grading'>('students');
   const [isImporting, setIsImporting] = useState(false);
 
@@ -882,35 +1033,28 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
 
   const handleAddStudent = async (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      let token = await getAccessToken();
-      if (!token) {
-        const result = await googleSignIn();
-        if (result) token = result.accessToken;
-      }
-      if (token) {
-        const spreadsheetId = '1OuHJlzvzj6_qhPPCjv-_g4lwBl8EueHETYPrO2Ikpdk';
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:E:append?valueInputOption=USER_ENTERED`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            values: [['', newStudent.number, `ม.${newStudent.class}`, `${newStudent.prefix}${newStudent.firstName} ${newStudent.lastName}`.trim(), newStudent.id]]
-          })
-        });
-      }
-      const createdStudent: Student = {
-        id: newStudent.id,
-        name: `${newStudent.prefix}${newStudent.firstName} ${newStudent.lastName}`.trim(),
-        class: newStudent.class,
-        number: parseInt(newStudent.number, 10) || 0
-      };
-      setStudents([...students, createdStudent]);
-      setIsAddingStudent(false);
-      setNewStudent({ id: '', prefix: '', firstName: '', lastName: '', class: '', number: '' });
-      alert('เพิ่มนักเรียนและบันทึกลง Google Sheet สำเร็จ');
-    } catch (err: any) {
-      alert('เพิ่มข้อมูลไม่สำเร็จ: ' + err.message);
+
+    const createdStudent: Student = {
+      id: newStudent.id.trim(),
+      name: `${newStudent.prefix}${newStudent.firstName} ${newStudent.lastName}`.trim(),
+      class: newStudent.class.trim(),
+      number: parseInt(newStudent.number, 10) || 0
+    };
+
+    if (!createdStudent.id || !createdStudent.name || !createdStudent.class) {
+      alert('กรุณากรอกรหัส ชื่อ และชั้นเรียนให้ครบ');
+      return;
     }
+
+    if (students.some((student: Student) => student.id === createdStudent.id)) {
+      alert('มีรหัสนักเรียนนี้อยู่แล้ว');
+      return;
+    }
+
+    setStudents([...students, createdStudent]);
+    setIsAddingStudent(false);
+    setNewStudent({ id: '', prefix: '', firstName: '', lastName: '', class: '', number: '' });
+    alert('เพิ่มนักเรียนลงฐานข้อมูลกลางสำเร็จ');
   };
 
   const handleExportCSV = () => {
@@ -1108,6 +1252,16 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
 
       {/* Main Area */}
       <div className="flex-1 p-8 overflow-y-auto h-screen">
+        {Object.values(databaseStatus || {}).some((status) => status === 'error') && (
+          <div className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">
+            ฐานข้อมูลกลางยังเชื่อมต่อไม่สำเร็จ กรุณาตรวจสอบ Firebase Project และ Firestore Rules ก่อนใช้สอบจริง
+          </div>
+        )}
+        {Object.values(databaseStatus || {}).every((status) => status === 'ready' || status === 'empty') && (
+          <div className="mb-5 rounded-xl border border-green-200 bg-green-50 p-4 text-green-700">
+            เชื่อมต่อฐานข้อมูลกลางแล้ว การแก้ข้อสอบและผลสอบจะอัปเดตทุกเครื่อง
+          </div>
+        )}
         {tab === 'students' && (
           <div>
             <div className="flex justify-between items-center mb-6">
