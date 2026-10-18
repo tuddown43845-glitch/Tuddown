@@ -5,6 +5,7 @@ import {
   getDocs,
   initializeFirestore,
   onSnapshot,
+  setDoc,
   writeBatch,
   type DocumentReference,
   type FirestoreError,
@@ -190,6 +191,84 @@ export const upsertSharedItems = async <T extends SharedItem>(
   });
 
   await commitActions(actions);
+};
+
+/**
+ * Direct single submission upload.
+ * Writing directly to doc(db, 'exam_submissions', sub.id) does NOT query other submissions,
+ * eliminating network congestion and race conditions when dozens of students submit simultaneously.
+ */
+export const saveSubmissionDirectly = async (
+  sub: { id: string; [key: string]: unknown },
+): Promise<{ success: boolean; error?: string }> => {
+  const docRef = doc(db, 'exam_submissions', String(sub.id));
+  
+  // Try up to 3 times with progressive delays
+  const delays = [0, 800, 1600];
+  let lastError: any = null;
+
+  for (let i = 0; i < delays.length; i++) {
+    try {
+      if (delays[i] > 0) {
+        await new Promise((res) => setTimeout(res, delays[i]));
+      }
+      await setDoc(docRef, sub, { merge: true });
+      // If success, remove from pending queue if present
+      try {
+        const pendingRaw = localStorage.getItem('pending_exam_submissions');
+        if (pendingRaw) {
+          const list: any[] = JSON.parse(pendingRaw);
+          const filtered = list.filter((item) => item.id !== sub.id);
+          localStorage.setItem('pending_exam_submissions', JSON.stringify(filtered));
+        }
+      } catch {}
+      return { success: true };
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`saveSubmissionDirectly attempt ${i + 1} failed:`, err);
+    }
+  }
+
+  // If all attempts failed, store in pending queue for background retry
+  try {
+    const pendingRaw = localStorage.getItem('pending_exam_submissions');
+    const list: any[] = pendingRaw ? JSON.parse(pendingRaw) : [];
+    if (!list.some((item) => item.id === sub.id)) {
+      list.push(sub);
+      localStorage.setItem('pending_exam_submissions', JSON.stringify(list));
+    }
+  } catch {}
+
+  console.error('saveSubmissionDirectly all retries failed:', lastError);
+  return { success: false, error: lastError?.message || String(lastError) };
+};
+
+/**
+ * Flush any pending offline submissions when connection recovers
+ */
+export const flushPendingSubmissions = async (): Promise<number> => {
+  try {
+    const pendingRaw = localStorage.getItem('pending_exam_submissions');
+    if (!pendingRaw) return 0;
+    const list: any[] = JSON.parse(pendingRaw);
+    if (!Array.isArray(list) || list.length === 0) return 0;
+
+    let syncedCount = 0;
+    const remaining: any[] = [];
+    for (const sub of list) {
+      try {
+        const docRef = doc(db, 'exam_submissions', String(sub.id));
+        await setDoc(docRef, sub, { merge: true });
+        syncedCount++;
+      } catch {
+        remaining.push(sub);
+      }
+    }
+    localStorage.setItem('pending_exam_submissions', JSON.stringify(remaining));
+    return syncedCount;
+  } catch {
+    return 0;
+  }
 };
 
 // Existing Google sign-in helpers are kept for compatibility with any other
