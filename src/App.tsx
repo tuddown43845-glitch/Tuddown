@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component } from 'react';
 import { AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw } from 'lucide-react';
 import { replaceSharedCollection, subscribeSharedCollection, upsertSharedItems, type SharedCollectionName } from './firebase';
 import mammoth from 'mammoth';
@@ -158,6 +158,59 @@ function readLocalArray<T>(key: string, fallback: T[]): T[] {
 }
 
 type RemoteStatus = 'loading' | 'ready' | 'empty' | 'error';
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  override state: ErrorBoundaryState = { hasError: false, error: null };
+
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('ErrorBoundary caught error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-100 font-sans p-4">
+          <div className="bg-white p-8 rounded-3xl shadow-xl text-center max-w-md border border-red-200">
+            <div className="w-16 h-16 mx-auto mb-4 bg-red-50 text-red-600 rounded-full flex items-center justify-center">
+              <AlertCircle size={32} />
+            </div>
+            <h2 className="text-2xl font-bold text-slate-800 mb-2">เกิดข้อผิดพลาดในการแสดงผล</h2>
+            <p className="text-slate-500 mb-6 text-sm">
+              {this.state.error?.message || 'ระบบพบปัญหาชั่วคราวในการเปิดหน้าข้อสอบ'}
+            </p>
+            <button
+              onClick={() => {
+                this.setState({ hasError: false, error: null });
+                window.location.reload();
+              }}
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-all cursor-pointer"
+            >
+              รีเฟรชหน้าเว็บใหม่
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // --- APP COMPONENT ---
 export default function App() {
@@ -437,7 +490,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-700 font-sans selection:bg-red-100 text-red-800 selection:text-slate-700">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-50 text-slate-700 font-sans selection:bg-red-100 text-red-800 selection:text-slate-700">
       {currentView === 'instructions' && <InstructionView onNext={() => setCurrentView('login')} />}
       {currentView === 'login' && <LoginView onLogin={handleLogin} />}
       {currentView === 'student-info' && currentUser && (
@@ -491,7 +545,8 @@ export default function App() {
           isSyncingAll={isSyncingAll}
         />
       )}
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }
 
@@ -653,7 +708,9 @@ function LoginView({ onLogin }: { onLogin: (id: string, p: string) => boolean })
 
 // --- STUDENT INFO VIEW ---
 function StudentInfoView({ student, onStart, onLogout }: { student: Student, onStart: (cls: string) => void, onLogout: () => void }) {
-  const [selectedClass, setSelectedClass] = useState(student.class);
+  const cleanClass = (student.class || '6/3').trim().replace(/^ม\.?\s*/, '');
+  const [selectedClass, setSelectedClass] = useState(cleanClass || '6/3');
+  const availableClasses = Array.from(new Set(['6/3', '6/8', cleanClass].filter(Boolean)));
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-slate-100 p-4 font-sans">
@@ -669,7 +726,7 @@ function StudentInfoView({ student, onStart, onLogout }: { student: Student, onS
             </div>
             <h2 className="text-xl font-bold drop-shadow-sm">ข้อมูลผู้เข้าสอบ</h2>
           </div>
-          <button onClick={onLogout} className="text-blue-100 hover:text-white p-2 flex items-center gap-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors">
+          <button onClick={onLogout} className="text-blue-100 hover:text-white p-2 flex items-center gap-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors cursor-pointer">
             <LogOut size={18} /> ออกจากระบบ
           </button>
         </div>
@@ -700,17 +757,14 @@ function StudentInfoView({ student, onStart, onLogout }: { student: Student, onS
             <label className="block text-sm font-bold text-slate-700 mb-3">
               โปรดยืนยันห้องเรียนของท่านเพื่อรับชุดข้อสอบให้ถูกต้อง:
             </label>
-            <div className="flex gap-4">
-              <label className={`flex-1 p-4 rounded-2xl border-2 cursor-pointer flex items-center justify-center gap-3 transition-all ${selectedClass === '6/3' ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-md scale-[1.02]' : 'border-slate-200 hover:bg-slate-50 text-slate-600 hover:border-blue-300'}`}>
-                <input type="radio" name="class" value="6/3" checked={selectedClass === '6/3'} onChange={() => setSelectedClass('6/3')} className="hidden" />
-                <CheckCircle2 size={24} className={selectedClass === '6/3' ? 'opacity-100 text-blue-600' : 'opacity-20'} />
-                <span className="font-bold text-lg">ม.6/3</span>
-              </label>
-              <label className={`flex-1 p-4 rounded-2xl border-2 cursor-pointer flex items-center justify-center gap-3 transition-all ${selectedClass === '6/8' ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-md scale-[1.02]' : 'border-slate-200 hover:bg-slate-50 text-slate-600 hover:border-blue-300'}`}>
-                <input type="radio" name="class" value="6/8" checked={selectedClass === '6/8'} onChange={() => setSelectedClass('6/8')} className="hidden" />
-                <CheckCircle2 size={24} className={selectedClass === '6/8' ? 'opacity-100 text-blue-600' : 'opacity-20'} />
-                <span className="font-bold text-lg">ม.6/8</span>
-              </label>
+            <div className="flex flex-wrap gap-4">
+              {availableClasses.map(cls => (
+                <label key={cls} className={`flex-1 min-w-[120px] p-4 rounded-2xl border-2 cursor-pointer flex items-center justify-center gap-3 transition-all ${selectedClass === cls ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-md scale-[1.02]' : 'border-slate-200 hover:bg-slate-50 text-slate-600 hover:border-blue-300'}`}>
+                  <input type="radio" name="class" value={cls} checked={selectedClass === cls} onChange={() => setSelectedClass(cls)} className="hidden" />
+                  <CheckCircle2 size={24} className={selectedClass === cls ? 'opacity-100 text-blue-600' : 'opacity-20'} />
+                  <span className="font-bold text-lg">ม.{cls}</span>
+                </label>
+              ))}
             </div>
           </div>
 
@@ -778,19 +832,26 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
   // Initialize and Shuffle
   useEffect(() => {
     if (shuffledMcqs.length > 0) return; // Prevent re-shuffling if already initialized
+    const validMcqs = (mcqs || []).filter(q => q && q.text && Array.isArray(q.options) && q.options.length > 0);
     // 1. Shuffle questions
-    const randMcqs = shuffleArray(mcqs).map(q => {
-      // 2. Shuffle options for each question
-      const origCorrectText = q.options[q.correctIndex];
-      const randOptions = shuffleArray(q.options);
+    const randMcqs = shuffleArray(validMcqs).map(q => {
+      // 2. Shuffle options for each question safely
+      const opts = Array.isArray(q.options) ? q.options : [];
+      const correctIdx = typeof q.correctIndex === 'number' && q.correctIndex >= 0 && q.correctIndex < opts.length ? q.correctIndex : 0;
+      const origCorrectText = opts[correctIdx] || opts[0] || '';
+      const randOptions = shuffleArray(opts);
       return {
         ...q,
+        options: opts,
         shuffledOptions: randOptions,
         originalCorrectText: origCorrectText
       };
     });
     setShuffledMcqs(randMcqs);
-  }, [mcqs]);
+    if (randMcqs.length === 0 && subjs.length > 0) {
+      setCurrentType('subj');
+    }
+  }, [mcqs, subjs]);
 
   // Timer
   useEffect(() => {
@@ -983,7 +1044,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
 
         {/* Main Content */}
         <div className="bg-white rounded-3xl shadow-xl border border-slate-200 p-8 min-h-[500px] flex flex-col">
-          {currentType === 'mcq' ? (
+          {currentType === 'mcq' && shuffledMcqs[currentIndex] ? (
             <>
               <div className="inline-block bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-sm font-bold mb-6 w-max">
                 ตอนที่ 1: ปรนัย (ข้อ {currentIndex + 1} / {shuffledMcqs.length})
@@ -1015,7 +1076,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
               })}
             </div>
           </>
-        ) : (
+        ) : currentType === 'subj' && subjs[currentIndex] ? (
           <>
             <div className="inline-block bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-sm font-bold mb-6 w-max">
               ตอนที่ 2: อัตนัย (ข้อ {currentIndex + 1} / {subjs.length})
@@ -1033,6 +1094,11 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
               />
             </div>
           </>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center text-slate-400 gap-3 py-12">
+            <AlertCircle size={36} />
+            <p className="font-bold">ไม่พบข้อสอบในหมวดนี้</p>
+          </div>
         )}
 
         {/* Footer Navigation */}
@@ -1040,43 +1106,56 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
           <button 
             onClick={() => {
               if (currentIndex > 0) setCurrentIndex(currentIndex - 1);
-              else if (currentType === 'subj') { setCurrentType('mcq'); setCurrentIndex(shuffledMcqs.length - 1); }
+              else if (currentType === 'subj' && shuffledMcqs.length > 0) { setCurrentType('mcq'); setCurrentIndex(shuffledMcqs.length - 1); }
             }}
-            disabled={currentType === 'mcq' && currentIndex === 0}
-            className="px-6 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-bold hover:bg-slate-50 disabled:opacity-50 transition-all hover:border-slate-300"
+            disabled={(currentType === 'mcq' && currentIndex === 0) || (currentType === 'subj' && currentIndex === 0 && shuffledMcqs.length === 0)}
+            className="px-6 py-3 rounded-xl border-2 border-slate-200 text-slate-600 font-bold hover:bg-slate-50 disabled:opacity-50 transition-all hover:border-slate-300 cursor-pointer"
           >
             ก่อนหน้า
           </button>
           
           <div className="flex gap-2 hidden md:flex">
-            <button 
-              onClick={() => setCurrentType('mcq')}
-              className={`w-3 h-3 rounded-full transition-all ${currentType === 'mcq' ? 'bg-blue-600 w-6' : 'bg-slate-300'}`}
-            />
-            <button 
-              onClick={() => setCurrentType('subj')}
-              className={`w-3 h-3 rounded-full transition-all ${currentType === 'subj' ? 'bg-blue-600 w-6' : 'bg-slate-300'}`}
-            />
+            {shuffledMcqs.length > 0 && (
+              <button 
+                onClick={() => { setCurrentType('mcq'); setCurrentIndex(0); }}
+                className={`w-3 h-3 rounded-full transition-all cursor-pointer ${currentType === 'mcq' ? 'bg-blue-600 w-6' : 'bg-slate-300'}`}
+              />
+            )}
+            {subjs.length > 0 && (
+              <button 
+                onClick={() => { setCurrentType('subj'); setCurrentIndex(0); }}
+                className={`w-3 h-3 rounded-full transition-all cursor-pointer ${currentType === 'subj' ? 'bg-blue-600 w-6' : 'bg-slate-300'}`}
+              />
+            )}
           </div>
 
           {(currentType === 'mcq' && currentIndex === shuffledMcqs.length - 1) ? (
-            <button 
-              onClick={() => { setCurrentType('subj'); setCurrentIndex(0); }}
-              className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md hover:bg-blue-700 hover:shadow-lg transition-all"
-            >
-              ถัดไป (อัตนัย)
-            </button>
+            subjs.length > 0 ? (
+              <button 
+                onClick={() => { setCurrentType('subj'); setCurrentIndex(0); }}
+                className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md hover:bg-blue-700 hover:shadow-lg transition-all cursor-pointer"
+              >
+                ถัดไป (อัตนัย)
+              </button>
+            ) : (
+              <button 
+                onClick={handleSubmit}
+                className="px-6 py-3 bg-red-600 text-white rounded-xl font-bold shadow-md hover:bg-red-700 hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer"
+              >
+                <CheckCircle2 size={20} /> ส่งข้อสอบ
+              </button>
+            )
           ) : (currentType === 'subj' && currentIndex === subjs.length - 1) ? (
             <button 
               onClick={handleSubmit}
-              className="px-6 py-3 bg-red-600 text-white rounded-xl font-bold shadow-md hover:bg-red-700 hover:shadow-lg transition-all flex items-center gap-2"
+              className="px-6 py-3 bg-red-600 text-white rounded-xl font-bold shadow-md hover:bg-red-700 hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer"
             >
               <CheckCircle2 size={20} /> ส่งข้อสอบ
             </button>
           ) : (
             <button 
               onClick={() => setCurrentIndex(currentIndex + 1)}
-              className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md hover:bg-blue-700 hover:shadow-lg transition-all"
+              className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md hover:bg-blue-700 hover:shadow-lg transition-all cursor-pointer"
             >
               ถัดไป
             </button>

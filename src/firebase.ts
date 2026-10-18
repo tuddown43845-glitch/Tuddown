@@ -82,7 +82,29 @@ export const subscribeSharedCollection = <T extends SharedItem>(
     getCollectionRef(name),
     (snapshot) => {
       const items = snapshot.docs
-        .map((snapshotDoc) => snapshotDoc.data() as T & { __order?: number })
+        .map((snapshotDoc) => {
+          const data = snapshotDoc.data();
+          return {
+            id: String(data.id || snapshotDoc.id),
+            ...data,
+          } as T & { __order?: number };
+        })
+        .filter((item) => {
+          if (!item) return false;
+          if (name === 'mcqs') {
+            const mcq = item as any;
+            return Boolean(mcq.text && Array.isArray(mcq.options) && mcq.options.length > 0);
+          }
+          if (name === 'subjs') {
+            const subj = item as any;
+            return Boolean(subj.text);
+          }
+          if (name === 'students') {
+            const st = item as any;
+            return Boolean(st.name && st.id);
+          }
+          return true;
+        })
         .sort((a, b) => (a.__order ?? 0) - (b.__order ?? 0))
         .map((item) => {
           const { __order: _order, ...cleanItem } = item;
