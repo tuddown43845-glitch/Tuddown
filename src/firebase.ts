@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import {
   collection,
   doc,
+  deleteDoc,
   getDocs,
   initializeFirestore,
   onSnapshot,
@@ -268,6 +269,86 @@ export const flushPendingSubmissions = async (): Promise<number> => {
     return syncedCount;
   } catch {
     return 0;
+  }
+};
+
+/**
+ * Delete a single student submission directly from Cloud Firestore
+ */
+export const deleteSubmissionDirectly = async (submissionId: string): Promise<boolean> => {
+  try {
+    const docRef = doc(db, 'exam_submissions', String(submissionId));
+    await deleteDoc(docRef);
+
+    // Also remove from pending offline queue if present
+    try {
+      const pendingRaw = localStorage.getItem('pending_exam_submissions');
+      if (pendingRaw) {
+        const list: any[] = JSON.parse(pendingRaw);
+        const filtered = list.filter((item) => String(item.id) !== String(submissionId));
+        localStorage.setItem('pending_exam_submissions', JSON.stringify(filtered));
+      }
+    } catch {}
+
+    return true;
+  } catch (err) {
+    console.error('deleteSubmissionDirectly error:', err);
+    return false;
+  }
+};
+
+/**
+ * Delete multiple student submissions directly from Cloud Firestore in batch
+ */
+export const deleteSubmissionsBatch = async (submissionIds: string[]): Promise<boolean> => {
+  try {
+    if (submissionIds.length === 0) return true;
+    const actions: BatchAction[] = submissionIds.map((id) => ({
+      type: 'delete',
+      ref: doc(db, 'exam_submissions', String(id)),
+    }));
+    await commitActions(actions);
+
+    // Also remove from pending offline queue
+    try {
+      const pendingRaw = localStorage.getItem('pending_exam_submissions');
+      if (pendingRaw) {
+        const idSet = new Set(submissionIds.map(String));
+        const list: any[] = JSON.parse(pendingRaw);
+        const filtered = list.filter((item) => !idSet.has(String(item.id)));
+        localStorage.setItem('pending_exam_submissions', JSON.stringify(filtered));
+      }
+    } catch {}
+
+    return true;
+  } catch (err) {
+    console.error('deleteSubmissionsBatch error:', err);
+    return false;
+  }
+};
+
+/**
+ * Clear all student exam submissions directly from Cloud Firestore
+ */
+export const clearAllSubmissionsDirectly = async (): Promise<boolean> => {
+  try {
+    const ref = collection(db, 'exam_submissions');
+    const snapshot = await getDocs(ref);
+    const actions: BatchAction[] = snapshot.docs.map((d) => ({
+      type: 'delete',
+      ref: d.ref,
+    }));
+    await commitActions(actions);
+
+    // Clear local pending submissions
+    try {
+      localStorage.removeItem('pending_exam_submissions');
+    } catch {}
+
+    return true;
+  } catch (err) {
+    console.error('clearAllSubmissionsDirectly error:', err);
+    return false;
   }
 };
 

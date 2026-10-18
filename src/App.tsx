@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, Component } from 'react';
-import { AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw, Copy, Check, Printer, FileCheck } from 'lucide-react';
-import { replaceSharedCollection, subscribeSharedCollection, upsertSharedItems, saveSubmissionDirectly, flushPendingSubmissions, type SharedCollectionName } from './firebase';
+import { AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw, Copy, Check, Printer, FileCheck, Archive, ArchiveRestore, FileDown } from 'lucide-react';
+import { replaceSharedCollection, subscribeSharedCollection, upsertSharedItems, saveSubmissionDirectly, flushPendingSubmissions, deleteSubmissionDirectly, deleteSubmissionsBatch, clearAllSubmissionsDirectly, type SharedCollectionName } from './firebase';
 import mammoth from 'mammoth';
 
 // --- TYPES ---
@@ -51,6 +51,8 @@ type Submission = {
   cheatCount: number;
   submittedAt: number;
   subjScores: Record<string, number>; // Admin grading
+  isArchived?: boolean;
+  archivedAt?: number;
 };
 
 // --- MOCK INITIAL DATA ---
@@ -408,6 +410,88 @@ export default function App() {
       showSyncError('ผลสอบ', error),
     );
   };
+
+  const handleDeleteSubmission = async (submissionId: string): Promise<boolean> => {
+    const ok = await deleteSubmissionDirectly(submissionId);
+    const remaining = submissions.filter(s => s.id !== submissionId);
+    setSubmissions(remaining);
+    localStorage.setItem('social_submissions', JSON.stringify(remaining));
+    return ok;
+  };
+
+  const handleDeleteMultipleSubmissions = async (submissionIds: string[]): Promise<boolean> => {
+    const ok = await deleteSubmissionsBatch(submissionIds);
+    const idSet = new Set(submissionIds);
+    const remaining = submissions.filter(s => !idSet.has(s.id));
+    setSubmissions(remaining);
+    localStorage.setItem('social_submissions', JSON.stringify(remaining));
+    return ok;
+  };
+
+  const handleClearAllSubmissions = async (): Promise<boolean> => {
+    const ok = await clearAllSubmissionsDirectly();
+    setSubmissions([]);
+    localStorage.setItem('social_submissions', JSON.stringify([]));
+    return ok;
+  };
+
+  const handleToggleArchiveSubmission = (submissionId: string) => {
+    const updated = submissions.map(s => {
+      if (s.id === submissionId) {
+        const nextArchived = !s.isArchived;
+        return {
+          ...s,
+          isArchived: nextArchived,
+          archivedAt: nextArchived ? Date.now() : undefined
+        };
+      }
+      return s;
+    });
+    setSubmissions(updated);
+    localStorage.setItem('social_submissions', JSON.stringify(updated));
+    void upsertSharedItems('submissions', updated).catch(error =>
+      showSyncError('จัดเก็บผลสอบ', error),
+    );
+  };
+
+  const handleBulkArchiveSubmissions = (submissionIds: string[], archiveStatus: boolean) => {
+    const idSet = new Set(submissionIds);
+    const updated = submissions.map(s => {
+      if (idSet.has(s.id)) {
+        return {
+          ...s,
+          isArchived: archiveStatus,
+          archivedAt: archiveStatus ? Date.now() : undefined
+        };
+      }
+      return s;
+    });
+    setSubmissions(updated);
+    localStorage.setItem('social_submissions', JSON.stringify(updated));
+    void upsertSharedItems('submissions', updated).catch(error =>
+      showSyncError('จัดเก็บผลสอบ', error),
+    );
+  };
+
+  const handleDownloadArchiveJSON = () => {
+    const exportData = {
+      title: 'คลังจัดเก็บข้อมูลผลการสอบนักเรียน โรงเรียนบ้านม่วงพิทยาคม',
+      exportedAt: new Date().toISOString(),
+      examType: settings.currentExamType,
+      examFormat: settings.examFormat || 'both',
+      totalCount: submissions.length,
+      submissions: submissions
+    };
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `exam_archive_backup_${settings.currentExamType}_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
   const saveSettings = (newSettings: Settings) => {
     setSettings(newSettings);
     localStorage.setItem('social_settings', JSON.stringify(newSettings));
@@ -537,6 +621,11 @@ export default function App() {
           settings={settings}
           mcqCount={settings.examFormat === 'subj_only' ? 0 : mcqs.filter(m => matchesExamType(m.examType, settings.currentExamType) && matchesClassGroup(m.classGroup, currentUser.class)).length}
           subjCount={settings.examFormat === 'mcq_only' ? 0 : subjs.filter(s => matchesExamType(s.examType, settings.currentExamType) && matchesClassGroup(s.classGroup, currentUser.class)).length}
+          existingSubmission={submissions.find(s => s.studentId === currentUser.id && !s.isArchived)}
+          onViewResult={(sub) => {
+            setCurrentSubmission(sub);
+            setCurrentView('result');
+          }}
           onStart={(cls) => {
             setCurrentSubmission(null);
             setCurrentUser({...currentUser, class: cls}); // Ensure correct class
@@ -586,6 +675,12 @@ export default function App() {
           saveSettings={saveSettings}
           onSyncAllToCloud={handleSyncAllToCloud}
           isSyncingAll={isSyncingAll}
+          onDeleteSubmission={handleDeleteSubmission}
+          onDeleteMultipleSubmissions={handleDeleteMultipleSubmissions}
+          onClearAllSubmissions={handleClearAllSubmissions}
+          onToggleArchiveSubmission={handleToggleArchiveSubmission}
+          onBulkArchiveSubmissions={handleBulkArchiveSubmissions}
+          onDownloadArchiveJSON={handleDownloadArchiveJSON}
         />
       )}
       </div>
@@ -755,6 +850,8 @@ function StudentInfoView({
   settings, 
   mcqCount = 0, 
   subjCount = 0, 
+  existingSubmission,
+  onViewResult,
   onStart, 
   onLogout 
 }: { 
@@ -762,6 +859,8 @@ function StudentInfoView({
   settings?: Settings; 
   mcqCount?: number; 
   subjCount?: number; 
+  existingSubmission?: Submission | null;
+  onViewResult?: (sub: Submission) => void;
   onStart: (cls: string) => void; 
   onLogout: () => void; 
 }) {
@@ -849,32 +948,90 @@ function StudentInfoView({
             </div>
           </div>
 
-          <div className="mb-8">
-            <label className="block text-sm font-bold text-slate-700 mb-3">
-              โปรดยืนยันห้องเรียนของท่านเพื่อรับชุดข้อสอบให้ถูกต้อง:
-            </label>
-            <div className="flex flex-wrap gap-4">
-              {availableClasses.map(cls => (
-                <label key={cls} className={`flex-1 min-w-[120px] p-4 rounded-2xl border-2 cursor-pointer flex items-center justify-center gap-3 transition-all ${selectedClass === cls ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-md scale-[1.02]' : 'border-slate-200 hover:bg-slate-50 text-slate-600 hover:border-blue-300'}`}>
-                  <input type="radio" name="class" value={cls} checked={selectedClass === cls} onChange={() => setSelectedClass(cls)} className="hidden" />
-                  <CheckCircle2 size={24} className={selectedClass === cls ? 'opacity-100 text-blue-600' : 'opacity-20'} />
-                  <span className="font-bold text-lg">ม.{cls}</span>
-                </label>
-              ))}
+          {existingSubmission ? (
+            /* Student has already submitted this exam */
+            <div className="bg-emerald-50 border-2 border-emerald-400 rounded-3xl p-6 shadow-sm mb-4 text-center animate-in fade-in duration-200">
+              <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-3 shadow-inner">
+                <CheckCircle2 size={36} />
+              </div>
+              <h3 className="text-xl font-bold text-emerald-900 mb-1">ท่านได้ส่งข้อสอบชุดนี้เข้าสู่ระบบแล้ว</h3>
+              <p className="text-slate-600 text-xs mb-3">
+                วันที่ส่ง: <span className="font-semibold text-slate-800">{new Date(existingSubmission.submittedAt).toLocaleString('th-TH')}</span>
+              </p>
+              
+              {existingSubmission.confirmationCode && (
+                <div className="inline-block bg-white border border-emerald-300 rounded-xl px-4 py-2 font-mono text-sm font-bold text-blue-800 shadow-xs mb-4">
+                  รหัสยืนยัน: {existingSubmission.confirmationCode}
+                </div>
+              )}
+
+              <div className="bg-white/90 p-4 rounded-2xl border border-emerald-200 text-xs text-slate-700 mb-5 text-left space-y-1.5 shadow-2xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">คะแนนปรนัย:</span>
+                  <span className="font-bold text-emerald-700 text-sm">{existingSubmission.mcqScore} คะแนน</span>
+                </div>
+                {Object.keys(existingSubmission.subjScores || {}).length > 0 && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-500">คะแนนอัตนัย (ครูตรวจแล้ว):</span>
+                    <span className="font-bold text-blue-700 text-sm">
+                      {Object.values(existingSubmission.subjScores).reduce((a: number, b: number) => a + b, 0)} คะแนน
+                    </span>
+                  </div>
+                )}
+                <div className="pt-2 border-t border-slate-100 text-[11px] text-amber-800 flex items-center gap-1.5">
+                  <AlertCircle size={14} className="shrink-0 text-amber-600" />
+                  <span>หากต้องการเข้าสอบใหม่ กรุณาติดต่อคุณครูเพื่อลบข้อมูลผลสอบเดิมของท่านในระบบ</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={() => onViewResult && onViewResult(existingSubmission)}
+                  className="flex-1 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md shadow-emerald-200 hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <FileCheck size={18} /> ดูผลคะแนนและใบยืนยันการส่ง
+                </button>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="px-6 py-3.5 border-2 border-slate-300 text-slate-700 font-bold rounded-xl hover:bg-slate-50 transition-all cursor-pointer"
+                >
+                  ออกจากระบบ
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            /* Student has NOT submitted or submission was cleared/deleted -> can start */
+            <>
+              <div className="mb-8">
+                <label className="block text-sm font-bold text-slate-700 mb-3">
+                  โปรดยืนยันห้องเรียนของท่านเพื่อรับชุดข้อสอบให้ถูกต้อง:
+                </label>
+                <div className="flex flex-wrap gap-4">
+                  {availableClasses.map(cls => (
+                    <label key={cls} className={`flex-1 min-w-[120px] p-4 rounded-2xl border-2 cursor-pointer flex items-center justify-center gap-3 transition-all ${selectedClass === cls ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-md scale-[1.02]' : 'border-slate-200 hover:bg-slate-50 text-slate-600 hover:border-blue-300'}`}>
+                      <input type="radio" name="class" value={cls} checked={selectedClass === cls} onChange={() => setSelectedClass(cls)} className="hidden" />
+                      <CheckCircle2 size={24} className={selectedClass === cls ? 'opacity-100 text-blue-600' : 'opacity-20'} />
+                      <span className="font-bold text-lg">ม.{cls}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
 
-          <div className="bg-red-50 p-5 rounded-2xl border-l-4 border-red-500 shadow-sm mb-8 text-sm text-red-800 flex gap-3 items-start">
-            <ShieldAlert size={24} className="shrink-0 mt-0.5 text-red-600" />
-            <p><strong>คำเตือน:</strong> หากเริ่มทำข้อสอบแล้ว ห้ามย่อหน้าต่าง เปลี่ยนแท็บ หรือเปิดโปรแกรมอื่นเด็ดขาด หากระบบตรวจพบการละเมิดเกิน 4 ครั้ง จะถือว่าทุจริตและปรับคะแนนเป็น 0 ทันที</p>
-          </div>
+              <div className="bg-red-50 p-5 rounded-2xl border-l-4 border-red-500 shadow-sm mb-8 text-sm text-red-800 flex gap-3 items-start">
+                <ShieldAlert size={24} className="shrink-0 mt-0.5 text-red-600" />
+                <p><strong>คำเตือน:</strong> หากเริ่มทำข้อสอบแล้ว ห้ามย่อหน้าต่าง เปลี่ยนแท็บ หรือเปิดโปรแกรมอื่นเด็ดขาด หากระบบตรวจพบการละเมิดเกิน 4 ครั้ง จะถือว่าทุจริตและปรับคะแนนเป็น 0 ทันที</p>
+              </div>
 
-          <button 
-            onClick={() => onStart(selectedClass)}
-            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2 shadow-md shadow-blue-200 hover:shadow-lg transition-all"
-          >
-            เริ่มทำข้อสอบ <ChevronRight />
-          </button>
+              <button 
+                onClick={() => onStart(selectedClass)}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2 shadow-md shadow-blue-200 hover:shadow-lg transition-all cursor-pointer"
+              >
+                เริ่มทำข้อสอบ <ChevronRight />
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1596,8 +1753,28 @@ function ResultView({
   );
 }
 
-// --- ADMIN VIEW ---
-function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmissions, subjs, setSubjs, onLogout, databaseStatus, settings, saveSettings, onSyncAllToCloud, isSyncingAll }: any) {
+function AdminView({ 
+  students, 
+  setStudents, 
+  mcqs, 
+  setMcqs, 
+  submissions, 
+  setSubmissions, 
+  subjs, 
+  setSubjs, 
+  onLogout, 
+  databaseStatus, 
+  settings, 
+  saveSettings, 
+  onSyncAllToCloud, 
+  isSyncingAll,
+  onDeleteSubmission,
+  onDeleteMultipleSubmissions,
+  onClearAllSubmissions,
+  onToggleArchiveSubmission,
+  onBulkArchiveSubmissions,
+  onDownloadArchiveJSON
+}: any) {
   const [tab, setTab] = useState<'students' | 'mcqs' | 'subjs' | 'grading' | 'settings'>('settings');
   const [isImporting, setIsImporting] = useState(false);
 
@@ -1609,6 +1786,7 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
   const [subClassFilter, setSubClassFilter] = useState('all');
   const [selectedMcqs, setSelectedMcqs] = useState<Set<string>>(new Set());
   const [selectedSubjs, setSelectedSubjs] = useState<Set<string>>(new Set());
+  const [selectedSubmissions, setSelectedSubmissions] = useState<Set<string>>(new Set());
 
   const [isImportingMcqText, setIsImportingMcqText] = useState(false);
   const [mcqImportText, setMcqImportText] = useState('');
@@ -1627,6 +1805,14 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
   
   const [gradingSub, setGradingSub] = useState<Submission | null>(null);
   const [tempScores, setTempScores] = useState<Record<string, number>>({});
+
+  const [submissionToDelete, setSubmissionToDelete] = useState<Submission | null>(null);
+  const [submissionsToDelete, setSubmissionsToDelete] = useState<Submission[] | null>(null);
+  const [confirmClearAllSubmissions, setConfirmClearAllSubmissions] = useState(false);
+  const [archiveFilter, setArchiveFilter] = useState<'active' | 'archived' | 'all'>('active');
+  const [isDeletingSubmission, setIsDeletingSubmission] = useState(false);
+  const [isDeletingMultiple, setIsDeletingMultiple] = useState(false);
+  const [isClearingAllSubmissions, setIsClearingAllSubmissions] = useState(false);
 
   const handleImportSheet = async () => {
     try {
@@ -1747,7 +1933,7 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
   };
 
   const handleExportCSV = () => {
-    const headers = ["วันที่ส่ง", "รหัสยืนยันการส่ง", "รหัสนักเรียน", "ชื่อ-สกุล", "ชั้น", "เลขที่", "คะแนนปรนัย", "คะแนนอัตนัย", "คะแนนรวม", "เวลาที่ใช้ (นาที)", "แจ้งเตือนทุจริต"];
+    const headers = ["วันที่ส่ง", "รหัสยืนยันการส่ง", "รหัสนักเรียน", "ชื่อ-สกุล", "ชั้น", "เลขที่", "คะแนนปรนัย", "คะแนนอัตนัย", "คะแนนรวม", "เวลาที่ใช้ (นาที)", "แจ้งเตือนทุจริต", "สถานะการจัดเก็บ"];
     const rows = submissions.map((s: Submission) => {
        const student = students.find((st: Student) => st.id === s.studentId);
        const subjTotal = Object.values(s.subjScores || {}).reduce((a: number, b: number) => a + b, 0);
@@ -1762,7 +1948,8 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
          subjTotal,
          s.mcqScore + subjTotal,
          (s.timeTakenMs / 60000).toFixed(2),
-         s.cheatCount
+         s.cheatCount,
+         s.isArchived ? '"จัดเก็บเข้ากรุแล้ว"' : '"ผลสอบปัจจุบัน"'
        ].join(',');
     });
     const csvContent = "\uFEFF" + [headers.join(','), ...rows].join("\n");
@@ -2285,58 +2472,199 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
           </div>
         )}
 
-        {tab === 'grading' && (
-          <div>
-            <div className="flex justify-between items-center mb-6">
-              <div className="flex items-center gap-4">
-                <h3 className="text-2xl font-bold">ผลการสอบและการตรวจให้คะแนน</h3>
-                <select 
-                  className="border border-blue-200 p-2 rounded-lg bg-white"
-                  value={subClassFilter}
-                  onChange={(e) => setSubClassFilter(e.target.value)}
-                >
-                  <option value="all">ทุกห้องเรียน</option>
-                  {Array.from(new Set(students.map((s: Student) => s.class))).sort().map(c => (
-                    <option key={c as string} value={c as string}>ห้อง {c as string}</option>
-                  ))}
-                </select>
+        {tab === 'grading' && (() => {
+          const visibleSubmissions = submissions
+            .filter((s: Submission) => {
+              const student = students.find((st: Student) => st.id === s.studentId);
+              const matchesClass = subClassFilter === 'all' || (student && student.class === subClassFilter) || s.classGroup === subClassFilter;
+              const matchesArchive = archiveFilter === 'all' 
+                ? true 
+                : archiveFilter === 'archived' 
+                  ? !!s.isArchived 
+                  : !s.isArchived;
+              return matchesClass && matchesArchive;
+            })
+            .sort((a: Submission, b: Submission) => {
+              const sA = students.find((st: Student) => st.id === a.studentId);
+              const sB = students.find((st: Student) => st.id === b.studentId);
+              return (sA?.number || 0) - (sB?.number || 0);
+            });
+
+          const isAllVisibleSelected = visibleSubmissions.length > 0 && visibleSubmissions.every(s => selectedSubmissions.has(s.id));
+
+          return (
+            <div>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-slate-800">ผลการสอบและการตรวจให้คะแนน</h3>
+                  <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs font-medium">
+                    <span className="text-slate-500">ทั้งหมด {submissions.length} คน</span>
+                    <span className="text-slate-300">•</span>
+                    <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                      ผลสอบปัจจุบัน {submissions.filter((s: Submission) => !s.isArchived).length} คน
+                    </span>
+                    <span className="text-slate-300">•</span>
+                    <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                      จัดเก็บเข้ากรุแล้ว {submissions.filter((s: Submission) => s.isArchived).length} คน
+                    </span>
+                  </div>
+                </div>
+
+                {/* Filters & Actions */}
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <select 
+                    className="border border-blue-200 p-2 rounded-xl bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                    value={subClassFilter}
+                    onChange={(e) => setSubClassFilter(e.target.value)}
+                  >
+                    <option value="all">ทุกห้องเรียน</option>
+                    {Array.from(new Set(students.map((s: Student) => s.class))).sort().map(c => (
+                      <option key={c as string} value={c as string}>ห้อง {c as string}</option>
+                    ))}
+                  </select>
+
+                  <select 
+                    className="border border-blue-200 p-2 rounded-xl bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 font-medium"
+                    value={archiveFilter}
+                    onChange={(e) => setArchiveFilter(e.target.value as any)}
+                  >
+                    <option value="active">📁 ผลสอบปัจจุบัน (Active)</option>
+                    <option value="archived">📦 ที่จัดเก็บเข้ากรุแล้ว (Archived)</option>
+                    <option value="all">🌐 แสดงทั้งหมด (All)</option>
+                  </select>
+
+                  <button 
+                    onClick={onDownloadArchiveJSON} 
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+                    title="ดาวน์โหลดไฟล์สำรองข้อมูลผลสอบทั้งหมด (JSON) เพื่อเก็บประวัติไว้ในคอมพิวเตอร์"
+                  >
+                    <FileDown size={16} /> สำรองข้อมูล (JSON)
+                  </button>
+
+                  <button 
+                    onClick={handleExportCSV} 
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+                    title="ส่งออกผลคะแนนเป็นไฟล์ Excel / CSV"
+                  >
+                    <Download size={16} /> ส่งออก CSV
+                  </button>
+
+                  <button 
+                    onClick={() => setConfirmClearAllSubmissions(true)} 
+                    disabled={submissions.length === 0}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-medium shadow-sm transition-all disabled:opacity-40 cursor-pointer"
+                    title="ล้างข้อมูลผลการสอบของนักเรียนทั้งหมดออกจากฐานข้อมูลเพื่อเริ่มสอบรอบใหม่"
+                  >
+                    <Trash2 size={16} /> ล้างข้อมูลผลสอบทั้งหมด
+                  </button>
+                </div>
               </div>
-              <button onClick={handleExportCSV} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm">
-                <Download size={16} /> ส่งออกข้อมูล (CSV)
-              </button>
-            </div>
-            
-            <div className="bg-white rounded-xl border border-blue-200 overflow-hidden">
-              <table className="w-full text-left">
-                <thead className="bg-blue-50">
-                  <tr>
-                    <th className="p-4 font-medium text-blue-900">วันที่/เวลาส่ง</th>
-                    <th className="p-4 font-medium text-blue-900">รหัส นร.</th>
-                    <th className="p-4 font-medium text-blue-900">ชื่อ-สกุล</th>
-                    <th className="p-4 font-medium text-blue-900">ชั้น/เลขที่</th>
-                    <th className="p-4 font-medium text-blue-900">คะแนน (ปรนัย+อัตนัย)</th>
-                    <th className="p-4 font-medium text-blue-900">เวลาที่ใช้</th>
-                    <th className="p-4 font-medium text-blue-900">สถานะทุจริต</th>
-                    <th className="p-4 font-medium text-blue-900">จัดการ</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E3D5CA]">
-                  {submissions
-                    .filter((s: Submission) => {
-                      const student = students.find((st: Student) => st.id === s.studentId);
-                      return subClassFilter === 'all' || (student && student.class === subClassFilter) || s.classGroup === subClassFilter;
-                    })
-                    .sort((a: Submission, b: Submission) => {
-                      const sA = students.find((st: Student) => st.id === a.studentId);
-                      const sB = students.find((st: Student) => st.id === b.studentId);
-                      return (sA?.number || 0) - (sB?.number || 0);
-                    })
-                    .map((s: Submission) => {
+
+              {/* Batch Actions Bar */}
+              {selectedSubmissions.size > 0 && (
+                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-300 rounded-2xl p-3.5 mb-4 flex flex-wrap items-center justify-between gap-3 shadow-sm animate-in fade-in slide-in-from-top-2 duration-150">
+                  <div className="flex items-center gap-2.5 text-sm font-bold text-blue-900">
+                    <CheckSquare size={20} className="text-blue-600" />
+                    <span>เลือกไว้ {selectedSubmissions.size} คน (จาก {visibleSubmissions.length} คนในตาราง)</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBulkArchiveSubmissions(Array.from(selectedSubmissions), true);
+                        setSelectedSubmissions(new Set());
+                      }}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                      title="จัดเก็บผลสอบของนักเรียนที่เลือกเข้ากรุ (ซ่อนจากตารางปัจจุบัน)"
+                    >
+                      <Archive size={14} /> จัดเก็บที่เลือก ({selectedSubmissions.size})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBulkArchiveSubmissions(Array.from(selectedSubmissions), false);
+                        setSelectedSubmissions(new Set());
+                      }}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                      title="กู้คืนผลสอบของนักเรียนที่เลือกกลับมาหน้าปัจจุบัน"
+                    >
+                      <ArchiveRestore size={14} /> กู้คืนที่เลือก ({selectedSubmissions.size})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const toDel = submissions.filter(s => selectedSubmissions.has(s.id));
+                        setSubmissionsToDelete(toDel);
+                      }}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                      title="ลบผลสอบของนักเรียนที่เลือกออกจากระบบ เพื่อให้นักเรียนเข้าสอบใหม่ได้"
+                    >
+                      <Trash2 size={14} /> ลบผลสอบที่เลือก ({selectedSubmissions.size})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSubmissions(new Set())}
+                      className="px-3 py-1.5 border border-slate-300 text-slate-700 hover:bg-white rounded-xl text-xs font-semibold transition-all cursor-pointer"
+                    >
+                      ยกเลิกการเลือก
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              <div className="bg-white rounded-2xl border border-blue-200 overflow-hidden shadow-sm">
+                <table className="w-full text-left">
+                  <thead className="bg-blue-50">
+                    <tr>
+                      <th className="p-4 w-12 text-center">
+                        <input 
+                          type="checkbox" 
+                          className="w-4 h-4 rounded border-blue-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          checked={isAllVisibleSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedSubmissions(new Set([...selectedSubmissions, ...visibleSubmissions.map(s => s.id)]));
+                            } else {
+                              const next = new Set(selectedSubmissions);
+                              visibleSubmissions.forEach(s => next.delete(s.id));
+                              setSelectedSubmissions(next);
+                            }
+                          }}
+                          title={isAllVisibleSelected ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมดในหน้านี้'}
+                        />
+                      </th>
+                      <th className="p-4 font-medium text-blue-900">วันที่/เวลาส่ง</th>
+                      <th className="p-4 font-medium text-blue-900">รหัส นร.</th>
+                      <th className="p-4 font-medium text-blue-900">ชื่อ-สกุล</th>
+                      <th className="p-4 font-medium text-blue-900">ชั้น/เลขที่</th>
+                      <th className="p-4 font-medium text-blue-900">คะแนน (ปรนัย+อัตนัย)</th>
+                      <th className="p-4 font-medium text-blue-900">เวลาที่ใช้</th>
+                      <th className="p-4 font-medium text-blue-900">สถานะทุจริต</th>
+                      <th className="p-4 font-medium text-blue-900">สถานะ</th>
+                      <th className="p-4 font-medium text-blue-900">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {visibleSubmissions.map((s: Submission) => {
                       const student = students.find((st: Student) => st.id === s.studentId);
                       const subjScoreTotal = Object.values(s.subjScores || {}).reduce((acc: number, val: number) => acc + val, 0);
+                      const isSelected = selectedSubmissions.has(s.id);
                       return (
-                      <tr key={s.id} className="hover:bg-slate-50">
-                        <td className="p-4">{new Date(s.submittedAt).toLocaleString('th-TH')}</td>
+                      <tr key={s.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-blue-50/40' : ''}`}>
+                        <td className="p-4 w-12 text-center">
+                          <input 
+                            type="checkbox" 
+                            className="w-4 h-4 rounded border-blue-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              const next = new Set(selectedSubmissions);
+                              if (e.target.checked) next.add(s.id);
+                              else next.delete(s.id);
+                              setSelectedSubmissions(next);
+                            }}
+                          />
+                        </td>
+                        <td className="p-4 text-xs text-slate-700">{new Date(s.submittedAt).toLocaleString('th-TH')}</td>
                         <td className="p-4">
                           <div className="font-bold text-slate-800">{s.studentId}</div>
                           {s.confirmationCode && (
@@ -2345,26 +2673,95 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
                             </div>
                           )}
                         </td>
-                        <td className="p-4">{student?.name || '-'}</td>
-                        <td className="p-4">{student?.class || '-'}/{student?.number || '-'}</td>
-                        <td className="p-4 font-bold text-green-600">{s.mcqScore} + {subjScoreTotal} = {s.mcqScore + subjScoreTotal}</td>
-                      <td className="p-4">{Math.floor(s.timeTakenMs/60000)} น.</td>
-                      <td className="p-4">
-                        {s.cheatCount > 0 ? <span className="text-red-500 font-medium">พบ ({s.cheatCount})</span> : <span className="text-green-500">ปกติ</span>}
-                      </td>
-                      <td className="p-4 text-blue-600 cursor-pointer hover:underline" onClick={() => { setGradingSub(s); setTempScores(s.subjScores || {}); }}>ตรวจ/ดูคำตอบ</td>
-                    </tr>
-                  )})}
-                  {submissions.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="p-8 text-center text-slate-500">ยังไม่มีข้อมูลการส่งข้อสอบ</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                        <td className="p-4 font-medium text-slate-800">{student?.name || s.studentName || '-'}</td>
+                        <td className="p-4 text-slate-600">{student?.class || s.studentClass || s.classGroup || '-'}/{student?.number || s.studentNumber || '-'}</td>
+                        <td className="p-4 font-bold text-emerald-600">{s.mcqScore} + {subjScoreTotal} = {s.mcqScore + subjScoreTotal}</td>
+                        <td className="p-4 text-slate-600">{Math.floor(s.timeTakenMs/60000)} น.</td>
+                        <td className="p-4">
+                          {s.cheatCount > 0 ? (
+                            <span className="inline-flex items-center gap-1 text-red-600 font-bold bg-red-50 border border-red-200 px-2.5 py-0.5 rounded-full text-xs">
+                              <ShieldAlert size={12} /> พบ ({s.cheatCount})
+                            </span>
+                          ) : (
+                            <span className="text-emerald-600 font-medium text-xs bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">ปกติ</span>
+                          )}
+                        </td>
+                        <td className="p-4">
+                          {s.isArchived ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                              <Archive size={12} /> จัดเก็บแล้ว
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                              <CheckCircle2 size={12} /> ผลสอบปัจจุบัน
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button 
+                              onClick={() => { setGradingSub(s); setTempScores(s.subjScores || {}); }} 
+                              className="px-2.5 py-1.5 text-xs font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg border border-blue-200 transition-all cursor-pointer shrink-0"
+                              title="ตรวจและดูคำตอบอัตนัย"
+                            >
+                              ตรวจคำตอบ
+                            </button>
+                            
+                            <button 
+                              onClick={() => onToggleArchiveSubmission(s.id)}
+                              className={`px-2.5 py-1.5 text-xs font-bold rounded-lg border flex items-center gap-1 transition-all cursor-pointer shrink-0 ${
+                                s.isArchived 
+                                  ? 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200' 
+                                  : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+                              }`}
+                              title={s.isArchived ? 'กู้คืนผลสอบกลับมาแสดงในหน้าปัจจุบัน' : 'จัดเก็บข้อมูลนักเรียนคนนี้เข้ากรุ (ซ่อนจากตารางปัจจุบัน)'}
+                            >
+                              {s.isArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+                              <span>{s.isArchived ? 'กู้คืน' : 'จัดเก็บ'}</span>
+                            </button>
+
+                            <button 
+                              onClick={() => setSubmissionToDelete(s)}
+                              className="px-2.5 py-1.5 text-xs font-bold rounded-lg border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-800 flex items-center gap-1 transition-all cursor-pointer shrink-0"
+                              title="ลบผลการสอบของนักเรียนคนนี้ เพื่อให้นักเรียนเข้าสอบใหม่ได้"
+                            >
+                              <Trash2 size={13} />
+                              <span>ลบผลสอบ</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )})}
+                    {submissions.length === 0 && (
+                      <tr>
+                        <td colSpan={10} className="p-12 text-center text-slate-500">
+                          <div className="flex flex-col items-center justify-center gap-2">
+                            <AlertCircle size={32} className="text-slate-400" />
+                            <span className="font-bold text-base">ยังไม่มีข้อมูลการส่งข้อสอบในระบบ</span>
+                            <span className="text-xs text-slate-400">เมื่อนักเรียนส่งข้อสอบ ข้อมูลจะแสดงที่นี่แบบเรียลไทม์</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {submissions.length > 0 && visibleSubmissions.length === 0 && (
+                      <tr>
+                        <td colSpan={10} className="p-12 text-center text-slate-500">
+                          <div className="flex flex-col items-center justify-center gap-2">
+                            <AlertCircle size={32} className="text-slate-400" />
+                            <span className="font-bold text-base">
+                              {archiveFilter === 'archived' ? 'ไม่มีข้อมูลผลสอบที่จัดเก็บเข้ากรุไว้' : 'ไม่พบข้อมูลผลสอบตามเงื่อนไขที่เลือก'}
+                            </span>
+                            <span className="text-xs text-slate-400">ลองเปลี่ยนตัวกรองห้องเรียนหรือสถานะการจัดเก็บ</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Admin Modals */}
@@ -2764,6 +3161,208 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
                 setSubjs([]);
                 setConfirmDeleteAllSubjs(false);
               }} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">ยืนยันการลบทั้งหมด</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Single Submission Modal */}
+      {submissionToDelete && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 font-sans">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-red-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="w-14 h-14 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 size={28} />
+            </div>
+            <h3 className="text-xl font-bold text-center text-slate-900 mb-2">ลบผลการสอบของนักเรียน</h3>
+            <p className="text-sm text-slate-600 text-center mb-5">
+              คุณต้องการลบผลการสอบของนักเรียนคนนี้ออกจากระบบใช่หรือไม่?
+            </p>
+
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-sm space-y-2 mb-5">
+              <div className="flex justify-between">
+                <span className="text-slate-500">ชื่อ-นามสกุล:</span>
+                <span className="font-bold text-slate-800">
+                  {students.find((st: Student) => st.id === submissionToDelete.studentId)?.name || submissionToDelete.studentName || 'ไม่ระบุชื่อ'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">รหัสนักเรียน:</span>
+                <span className="font-mono font-bold text-slate-800">{submissionToDelete.studentId}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">ชั้น / เลขที่:</span>
+                <span className="font-bold text-slate-800">
+                  ม.{submissionToDelete.studentClass || submissionToDelete.classGroup} / เลขที่ {submissionToDelete.studentNumber || '-'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">คะแนนปรนัย:</span>
+                <span className="font-bold text-emerald-600">{submissionToDelete.mcqScore} คะแนน</span>
+              </div>
+              {submissionToDelete.confirmationCode && (
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">รหัสยืนยัน:</span>
+                  <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                    {submissionToDelete.confirmationCode}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl text-xs mb-6">
+              💡 <strong>คำแนะนำ:</strong> เมื่อลบแล้ว คำตอบและคะแนนเดิมจะถูกล้างออกจากฐานข้อมูล และนักเรียนคนนี้จะสามารถล็อกอินเพื่อ<strong>เข้าสอบใหม่</strong>ได้ทันที
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button 
+                onClick={() => setSubmissionToDelete(null)} 
+                disabled={isDeletingSubmission}
+                className="flex-1 py-2.5 border-2 border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button 
+                onClick={async () => {
+                  setIsDeletingSubmission(true);
+                  try {
+                    await onDeleteSubmission(submissionToDelete.id);
+                    setSubmissionToDelete(null);
+                  } finally {
+                    setIsDeletingSubmission(false);
+                  }
+                }} 
+                disabled={isDeletingSubmission}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingSubmission ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
+                {isDeletingSubmission ? 'กำลังลบ...' : 'ยืนยันลบผลสอบ'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Multiple Submissions Modal */}
+      {submissionsToDelete && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 font-sans">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-red-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="w-14 h-14 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 size={28} />
+            </div>
+            <h3 className="text-xl font-bold text-center text-slate-900 mb-2">ลบผลสอบของนักเรียนที่เลือก</h3>
+            <p className="text-sm text-slate-600 text-center mb-5">
+              คุณต้องการลบผลการสอบของนักเรียนจำนวน{' '}
+              <span className="font-bold text-red-600 text-base">{submissionsToDelete.length} คน</span>{' '}
+              ออกจากระบบใช่หรือไม่?
+            </p>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs max-h-36 overflow-y-auto mb-4 space-y-1 divide-y divide-slate-100">
+              {submissionsToDelete.map(sub => {
+                const st = students.find((s: Student) => s.id === sub.studentId);
+                return (
+                  <div key={sub.id} className="pt-1 first:pt-0 flex justify-between items-center text-slate-700">
+                    <div>
+                      <span className="font-bold text-slate-800">{st?.name || sub.studentName || sub.studentId}</span>
+                      <span className="text-[11px] text-slate-500 ml-1.5">({sub.studentId})</span>
+                    </div>
+                    <span className="font-bold text-emerald-600">{sub.mcqScore} คะแนน</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl text-xs mb-6">
+              💡 <strong>คำแนะนำ:</strong> เมื่อลบแล้ว คำตอบและคะแนนเดิมจะถูกล้างออกจากฐานข้อมูล และนักเรียนกลุ่มนี้จะสามารถล็อกอินเพื่อ<strong>เข้าสอบใหม่</strong>ได้ทันที
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button 
+                onClick={() => setSubmissionsToDelete(null)} 
+                disabled={isDeletingMultiple}
+                className="flex-1 py-2.5 border-2 border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button 
+                onClick={async () => {
+                  setIsDeletingMultiple(true);
+                  try {
+                    await onDeleteMultipleSubmissions(submissionsToDelete.map(s => s.id));
+                    setSubmissionsToDelete(null);
+                    setSelectedSubmissions(new Set());
+                  } finally {
+                    setIsDeletingMultiple(false);
+                  }
+                }} 
+                disabled={isDeletingMultiple}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingMultiple ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
+                {isDeletingMultiple ? 'กำลังลบ...' : `ยืนยันลบ (${submissionsToDelete.length} คน)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Submissions Modal */}
+      {confirmClearAllSubmissions && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 font-sans">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 w-full max-w-lg shadow-2xl border border-red-300 animate-in fade-in zoom-in-95 duration-150">
+            <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
+              <AlertCircle size={36} />
+            </div>
+            <h3 className="text-2xl font-bold text-center text-slate-900 mb-2">ล้างข้อมูลการสอบของนักเรียนทั้งหมด</h3>
+            <p className="text-slate-600 text-center mb-6 text-sm">
+              คุณกำลังจะล้างข้อมูลผลการสอบของนักเรียนทั้งหมดจำนวน{' '}
+              <span className="font-bold text-red-600 text-base">{submissions.length} รายการ</span>{' '}
+              ออกจากฐานข้อมูลกลาง (Cloud Firestore)
+            </p>
+
+            <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-xl text-xs text-red-900 space-y-2 mb-6">
+              <p className="font-bold text-sm text-red-800">⚠️ ข้อควรระวังอย่างยิ่ง:</p>
+              <ul className="list-disc pl-4 space-y-1">
+                <li>คะแนน คำตอบอัตนัย และประวัติการทำข้อสอบทั้งหมดจะถูกลบอย่างถาวร</li>
+                <li>นักเรียนทุกคนจะสามารถกลับมาเริ่มทำข้อสอบรอบใหม่ได้</li>
+                <li>ไม่สามารถเรียกคืนข้อมูลได้ หากยังไม่ได้ดาวน์โหลดไฟล์สำรองข้อมูล</li>
+              </ul>
+            </div>
+
+            <div className="mb-6">
+              <button
+                type="button"
+                onClick={onDownloadArchiveJSON}
+                className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl border border-slate-300 text-sm flex items-center justify-center gap-2 transition-all cursor-pointer"
+              >
+                <FileDown size={18} className="text-blue-600" /> แนะนำ: ดาวน์โหลดไฟล์สำรองข้อมูล (JSON) เก็บไว้ก่อน
+              </button>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setConfirmClearAllSubmissions(false)} 
+                disabled={isClearingAllSubmissions}
+                className="flex-1 py-3 border-2 border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button 
+                onClick={async () => {
+                  setIsClearingAllSubmissions(true);
+                  try {
+                    await onClearAllSubmissions();
+                    setConfirmClearAllSubmissions(false);
+                    alert('ล้างข้อมูลผลการสอบทั้งหมดเรียบร้อยแล้ว ระบบพร้อมสำหรับการสอบรอบใหม่');
+                  } finally {
+                    setIsClearingAllSubmissions(false);
+                  }
+                }} 
+                disabled={isClearingAllSubmissions}
+                className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isClearingAllSubmissions ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
+                {isClearingAllSubmissions ? 'กำลังล้างข้อมูล...' : 'ยืนยันล้างทั้งหมด'}
+              </button>
             </div>
           </div>
         </div>
