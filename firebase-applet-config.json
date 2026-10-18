@@ -5,5 +5,6 @@
   "storageBucket": "my-exam-system-84898.firebasestorage.app",
   "messagingSenderId": "640449898227",
   "appId": "1:640449898227:web:e096aec9ed7dc87b6b3986",
-  "measurementId": "G-5NW871CKNF"
+  "measurementId": "G-5NW871CKNF",
+  "firestoreDatabaseId": "ai-studio-03fa31d5-9cdf-4fa8-8703-f0e02c1b6f4e"
 }

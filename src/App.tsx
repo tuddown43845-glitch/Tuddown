@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock } from 'lucide-react';
+import { AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw } from 'lucide-react';
 import { replaceSharedCollection, subscribeSharedCollection, upsertSharedItems, type SharedCollectionName } from './firebase';
 import mammoth from 'mammoth';
 
@@ -83,6 +83,19 @@ const shuffleArray = <T,>(array: T[]): T[] => {
     [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
   }
   return newArr;
+};
+
+const matchesClassGroup = (itemClassGroup?: string, targetClass?: string) => {
+  if (!itemClassGroup) return true;
+  const normalized = itemClassGroup.trim();
+  if (normalized === 'ทั้งหมด' || normalized.toLowerCase() === 'all' || normalized.includes('ทั้งหมด') || normalized.includes('all')) return true;
+  if (!targetClass) return false;
+  return normalized.includes(targetClass);
+};
+
+const matchesExamType = (itemExamType?: string, currentExamType?: string) => {
+  if (!itemExamType || itemExamType === 'general' || !currentExamType || currentExamType === 'general') return true;
+  return itemExamType === currentExamType;
 };
 
 // อ่าน Google Sheet สาธารณะโดยไม่ต้องเข้าสู่ระบบ Google/Firebase
@@ -334,7 +347,27 @@ export default function App() {
     );
   };
 
-  // ครั้งแรกที่ผู้ดูแลเปิดระบบ จะย้ายข้อสอบชุดใหม่จากเครื่องเดิมขึ้นฐานข้อมูลกลาง
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+
+  const handleSyncAllToCloud = async () => {
+    setIsSyncingAll(true);
+    try {
+      await replaceSharedCollection('students', students);
+      await replaceSharedCollection('mcqs', mcqs);
+      await replaceSharedCollection('subjs', subjs);
+      await replaceSharedCollection('settings', [settings]);
+      if (submissions.length > 0) {
+        await upsertSharedItems('submissions', submissions);
+      }
+      alert('ซิงค์ข้อมูลและข้อสอบทั้งหมดขึ้นฐานข้อมูลกลาง (Cloud) เรียบร้อยแล้ว!\nทุกเครื่องที่เปิดแอปจะได้รับข้อสอบและข้อมูลชุดนี้ทันที');
+    } catch (error) {
+      showSyncError('ข้อมูลทั้งหมดขึ้นคลาวด์', error);
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
+  // ครั้งแรกที่ผู้ดูแลเปิดระบบ จะย้ายข้อสอบชุดใหม่ขึ้นฐานข้อมูลกลางหากบนคลาวด์ยังว่างอยู่
   useEffect(() => {
     if (!isAdmin) return;
 
@@ -345,7 +378,6 @@ export default function App() {
     ) => {
       if (
         remoteStatus[name] !== 'empty' ||
-        !hadLocalData.current[name] ||
         migrationStarted.current[name] ||
         data.length === 0
       ) {
@@ -422,8 +454,8 @@ export default function App() {
       {currentView === 'exam' && currentUser && (
         <ExamView 
           student={currentUser}
-          mcqs={mcqs.filter(m => (m.examType === settings.currentExamType || !m.examType || m.examType === 'general') && (m.classGroup === 'ทั้งหมด' || m.classGroup === 'all' || m.classGroup?.includes(currentUser.class)))}
-          subjs={subjs.filter(s => (s.examType === settings.currentExamType || !s.examType || s.examType === 'general') && (s.classGroup === 'ทั้งหมด' || s.classGroup === 'all' || s.classGroup?.includes(currentUser.class)))}
+          mcqs={mcqs.filter(m => matchesExamType(m.examType, settings.currentExamType) && matchesClassGroup(m.classGroup, currentUser.class))}
+          subjs={subjs.filter(s => matchesExamType(s.examType, settings.currentExamType) && matchesClassGroup(s.classGroup, currentUser.class))}
           onFinish={(sub) => {
             // ใช้ผลสอบครั้งนี้แสดงในหน้าสรุปทันที ไม่ค้นจากประวัติผลสอบทั้งหมด
             setCurrentSubmission(sub);
@@ -455,6 +487,8 @@ export default function App() {
           databaseStatus={remoteStatus}
           settings={settings}
           saveSettings={saveSettings}
+          onSyncAllToCloud={handleSyncAllToCloud}
+          isSyncingAll={isSyncingAll}
         />
       )}
     </div>
@@ -711,7 +745,7 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
   const [mcqAnswers, setMcqAnswers] = useState<Record<string, string>>({});
   const [subjAnswers, setSubjAnswers] = useState<Record<string, string>>({});
   
-  const [currentType, setCurrentType] = useState<'mcq' | 'subj'>('mcq');
+  const [currentType, setCurrentType] = useState<'mcq' | 'subj'>(mcqs.length === 0 ? 'subj' : 'mcq');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showGrid, setShowGrid] = useState(false);
   const [confirmSubmit, setConfirmSubmit] = useState(false);
@@ -854,7 +888,38 @@ function ExamView({ student, mcqs, subjs, onFinish }: { student: Student, mcqs: 
     );
   }
 
-  if (shuffledMcqs.length === 0) return <div>Loading...</div>;
+  if (mcqs.length === 0 && subjs.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 font-sans p-4">
+        <div className="bg-white p-8 rounded-3xl shadow-xl text-center max-w-md border border-slate-200">
+          <div className="w-20 h-20 mx-auto mb-4 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center">
+            <AlertCircle size={40} />
+          </div>
+          <h2 className="text-2xl font-bold text-slate-800 mb-2">ไม่พบข้อสอบสำหรับคุณ</h2>
+          <p className="text-slate-500 mb-6">
+            ยังไม่มีข้อสอบที่กำหนดไว้สำหรับระดับชั้นของคุณ หรือชุดข้อสอบนี้ยังไม่เปิดให้ทำ
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-all"
+          >
+            กลับสู่หน้าหลัก
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (mcqs.length > 0 && shuffledMcqs.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-bold text-slate-500 bg-slate-100">
+        <div className="flex items-center gap-3">
+          <Loader2 className="animate-spin text-blue-600" size={24} />
+          <span>กำลังเตรียมชุดข้อสอบ...</span>
+        </div>
+      </div>
+    );
+  }
 
   const mins = Math.floor(timeLeft / 60);
   const secs = timeLeft % 60;
@@ -1081,7 +1146,7 @@ function ResultView({ student, submission, mcqs, subjs, onLogout }: { student: S
             <div className="text-left mb-8">
               <h3 className="font-bold text-xl mb-4 text-slate-800 border-l-4 border-blue-600 pl-3">บันทึกคำตอบอัตนัย</h3>
               <div className="space-y-4">
-                {subjs.filter(s => s.classGroup === 'ทั้งหมด' || s.classGroup === 'all' || s.classGroup?.includes(student.class)).map((s, i) => (
+                {subjs.filter(s => matchesClassGroup(s.classGroup, student.class)).map((s, i) => (
                   <div key={s.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
                     <div className="text-slate-800 font-bold mb-3">{i+1}. {s.text}</div>
                     <div className="text-slate-600 bg-slate-50 p-4 rounded-lg whitespace-pre-wrap border border-slate-100">{submission.subjAnswers[s.id] || <span className="text-slate-400 italic">ไม่ได้ตอบ</span>}</div>
@@ -1104,7 +1169,7 @@ function ResultView({ student, submission, mcqs, subjs, onLogout }: { student: S
 }
 
 // --- ADMIN VIEW ---
-function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmissions, subjs, setSubjs, onLogout, databaseStatus, settings, saveSettings }: any) {
+function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmissions, subjs, setSubjs, onLogout, databaseStatus, settings, saveSettings, onSyncAllToCloud, isSyncingAll }: any) {
   const [tab, setTab] = useState<'students' | 'mcqs' | 'subjs' | 'grading' | 'settings'>('settings');
   const [isImporting, setIsImporting] = useState(false);
 
@@ -1488,6 +1553,42 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
                   <option value="midterm">กลางภาค (Midterm)</option>
                   <option value="final">ปลายภาค (Final)</option>
                 </select>
+              </div>
+              <div className="border-t border-blue-100 pt-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+                  <div>
+                    <h4 className="font-bold text-lg text-blue-900">ฐานข้อมูลกลางและการซิงค์ (Cloud Firestore)</h4>
+                    <p className="text-sm text-slate-500">
+                      ซิงค์ข้อสอบ รายชื่อนักเรียน และการตั้งค่าขึ้นคลาวด์ เพื่อให้โทรศัพท์และคอมพิวเตอร์ทุกเครื่องได้รับข้อสอบชุดเดียวกันทันที
+                    </p>
+                  </div>
+                  <button
+                    onClick={onSyncAllToCloud}
+                    disabled={isSyncingAll}
+                    className="flex items-center justify-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl shadow-sm transition-all disabled:opacity-50 shrink-0"
+                  >
+                    <RefreshCw size={18} className={isSyncingAll ? 'animate-spin' : ''} />
+                    {isSyncingAll ? 'กำลังซิงค์ขึ้นคลาวด์...' : 'ซิงค์ข้อมูลทั้งหมดขึ้นคลาวด์ทันที'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-medium">
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block">ข้อสอบปรนัย (MCQ):</span>
+                    <span className="font-bold text-slate-800 text-sm">{mcqs.length} ข้อ</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block">ข้อสอบอัตนัย (เขียน):</span>
+                    <span className="font-bold text-slate-800 text-sm">{subjs.length} ข้อ</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block">รายชื่อนักเรียน:</span>
+                    <span className="font-bold text-slate-800 text-sm">{students.length} คน</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-slate-500 block">ประวัติการส่งสอบ:</span>
+                    <span className="font-bold text-slate-800 text-sm">{submissions.length} รายการ</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1992,7 +2093,7 @@ function AdminView({ students, setStudents, mcqs, setMcqs, submissions, setSubmi
               )}
               
               <h4 className="font-bold text-blue-900 mb-4 text-lg border-b pb-2">ผลการสอบอัตนัย</h4>
-              {subjs.filter((s: any) => s.classGroup === 'ทั้งหมด' || s.classGroup === 'all' || s.classGroup?.includes(gradingSub.classGroup)).map((subj: any, i: number) => (
+              {subjs.filter((s: any) => matchesClassGroup(s.classGroup, gradingSub.classGroup)).map((subj: any, i: number) => (
                 <div key={subj.id} className="border border-blue-200 p-5 rounded-xl bg-white shadow-sm">
                   <div className="font-bold text-blue-900 mb-3">ข้อ {i+1}: {subj.text}</div>
                   <div className="bg-slate-50 border border-blue-100 p-4 rounded-lg mb-4 min-h-[80px] whitespace-pre-wrap text-slate-700">
