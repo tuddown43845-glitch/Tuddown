@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Tuddown Exam System",
+  "description": "Exam system imported from GitHub",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

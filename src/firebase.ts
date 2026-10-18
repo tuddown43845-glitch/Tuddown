@@ -25,13 +25,13 @@ const app = initializeApp(firebaseConfig);
 // causing Firestore writes to fail when their value is undefined.
 // ใช้ฐานข้อมูลที่ Firebase/AI Studio สร้างไว้แล้วในแพ็กเกจฟรี
 // จึงไม่ต้องสร้างฐานข้อมูล (default) และไม่ต้องอัปเกรดแบบเสียเงิน
-const FIRESTORE_DATABASE_ID =
+const unused_database_id =
   'ai-studio-03fa31d5-9cdf-4fa8-8703-f0e02c1b6f4e';
 
 const db = initializeFirestore(
   app,
   { ignoreUndefinedProperties: true },
-  FIRESTORE_DATABASE_ID,
+  "(default)",
 );
 const auth = getAuth(app);
 
@@ -39,7 +39,8 @@ export type SharedCollectionName =
   | 'students'
   | 'mcqs'
   | 'subjs'
-  | 'submissions';
+  | 'submissions'
+  | 'settings';
 
 type SharedItem = { id: string };
 type BatchAction =
