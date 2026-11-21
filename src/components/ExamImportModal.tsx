@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import {
   X,
   Upload,
@@ -14,6 +14,7 @@ import {
   ArrowLeft,
   Check,
   AlertCircle,
+  Copy,
 } from 'lucide-react';
 import {
   computeMcqWarnings,
@@ -22,6 +23,7 @@ import {
   extractStructuredLinesFromDocx,
   finalizeMcqDrafts,
   finalizeSubjDrafts,
+  normalizeQuestionFingerprint,
   parseMcqExcelToDrafts,
   parseMcqTextToDrafts,
   parseSubjExcelToDrafts,
@@ -41,6 +43,8 @@ export function ExamImportModal({
   defaultClassGroup,
   defaultExamType = 'general',
   initialSource = 'word',
+  existingMcqs = [],
+  existingSubjs = [],
   onClose,
   onConfirmImportMcqs,
   onConfirmImportSubjs,
@@ -51,6 +55,8 @@ export function ExamImportModal({
   defaultClassGroup: string;
   defaultExamType?: ExamTypeValue;
   initialSource?: 'word' | 'excel' | 'text';
+  existingMcqs?: MCQ[];
+  existingSubjs?: Subjective[];
   onClose: () => void;
   onConfirmImportMcqs?: (items: MCQ[]) => void;
   onConfirmImportSubjs?: (items: Subjective[]) => void;
@@ -74,7 +80,7 @@ export function ExamImportModal({
 
   const [mcqDrafts, setMcqDrafts] = useState<ParsedMcqDraft[]>([]);
   const [subjDrafts, setSubjDrafts] = useState<ParsedSubjDraft[]>([]);
-  const [showOnlyWarnings, setShowOnlyWarnings] = useState(false);
+  const [previewFilter, setPreviewFilter] = useState<'all' | 'warnings' | 'duplicates'>('all');
 
   const wordInputRef = useRef<HTMLInputElement | null>(null);
   const excelInputRef = useRef<HTMLInputElement | null>(null);
@@ -164,7 +170,7 @@ export function ExamImportModal({
         setSubjDrafts(allParsedSubjs);
       }
       setParseSourceNote(`แกะข้อสอบด้วย AI (${sourceLabel})`);
-      setShowOnlyWarnings(false);
+      setPreviewFilter('all');
       setStep('preview');
     } catch (err: any) {
       setParseError(err?.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อ AI');
@@ -224,7 +230,7 @@ export function ExamImportModal({
       setSubjDrafts(drafts);
     }
     setParseSourceNote(`อ่านจากไฟล์ Word: ${selectedWordFileName}`);
-    setShowOnlyWarnings(false);
+    setPreviewFilter('all');
     setStep('preview');
   };
 
@@ -252,7 +258,7 @@ export function ExamImportModal({
         setSubjDrafts(drafts);
       }
       setParseSourceNote(`อ่านจากไฟล์ Excel: ${file.name}`);
-      setShowOnlyWarnings(false);
+      setPreviewFilter('all');
       setStep('preview');
     } catch (err: any) {
       setParseError(`อ่านไฟล์ Excel ไม่สำเร็จ: ${err?.message || 'กรุณาตรวจสอบรูปแบบไฟล์'}`);
@@ -287,7 +293,7 @@ export function ExamImportModal({
       setSubjDrafts(drafts);
     }
     setParseSourceNote('แปลงจากข้อความที่วาง');
-    setShowOnlyWarnings(false);
+    setPreviewFilter('all');
     setStep('preview');
   };
 
@@ -342,15 +348,81 @@ export function ExamImportModal({
     }
   };
 
+  // Live Duplicate Detection: compares drafts against existing course bank + earlier rows in the same file
+  const existingBankFingerprints = useMemo(() => {
+    const map = new Map<string, number>();
+    const list = mode === 'mcq' ? existingMcqs : existingSubjs;
+    list.forEach((item, idx) => {
+      const fp = normalizeQuestionFingerprint(item.text);
+      if (fp && !map.has(fp)) map.set(fp, idx + 1);
+    });
+    return map;
+  }, [mode, existingMcqs, existingSubjs]);
+
+  const draftDuplicateMap = useMemo(() => {
+    const result = new Map<string, { type: 'in_bank' | 'in_file'; label: string }>();
+    const seenInFile = new Map<string, number>();
+    const drafts = mode === 'mcq' ? mcqDrafts : subjDrafts;
+
+    drafts.forEach((d, idx) => {
+      const fp = normalizeQuestionFingerprint(d.text);
+      if (!fp) return;
+      const bankPos = existingBankFingerprints.get(fp);
+      if (bankPos !== undefined) {
+        result.set(d.tempId, {
+          type: 'in_bank',
+          label: `ซ้ำกับข้อที่ ${bankPos} ที่มีอยู่แล้วในคลัง`,
+        });
+      } else {
+        const firstInFilePos = seenInFile.get(fp);
+        if (firstInFilePos !== undefined) {
+          result.set(d.tempId, {
+            type: 'in_file',
+            label: `ซ้ำกับข้อที่ ${firstInFilePos} ในไฟล์ที่นำเข้านี้`,
+          });
+        } else {
+          seenInFile.set(fp, idx + 1);
+        }
+      }
+    });
+
+    return result;
+  }, [mode, mcqDrafts, subjDrafts, existingBankFingerprints]);
+
+  const handleRemoveAllDuplicates = () => {
+    if (mode === 'mcq') {
+      setMcqDrafts((prev) => prev.filter((d) => !draftDuplicateMap.has(d.tempId)));
+    } else {
+      setSubjDrafts((prev) => prev.filter((d) => !draftDuplicateMap.has(d.tempId)));
+    }
+    if (previewFilter === 'duplicates') {
+      setPreviewFilter('all');
+    }
+  };
+
   const totalCount = mode === 'mcq' ? mcqDrafts.length : subjDrafts.length;
+  const duplicateCount = draftDuplicateMap.size;
   const warningCount =
     mode === 'mcq'
       ? mcqDrafts.filter((d) => d.warnings.length > 0).length
       : subjDrafts.filter((d) => d.warnings.length > 0).length;
-  const readyCount = totalCount - warningCount;
+  const readyCount =
+    mode === 'mcq'
+      ? mcqDrafts.filter((d) => d.warnings.length === 0 && !draftDuplicateMap.has(d.tempId)).length
+      : subjDrafts.filter((d) => d.warnings.length === 0 && !draftDuplicateMap.has(d.tempId)).length;
 
-  const visibleMcqs = showOnlyWarnings ? mcqDrafts.filter((d) => d.warnings.length > 0) : mcqDrafts;
-  const visibleSubjs = showOnlyWarnings ? subjDrafts.filter((d) => d.warnings.length > 0) : subjDrafts;
+  const visibleMcqs =
+    previewFilter === 'warnings'
+      ? mcqDrafts.filter((d) => d.warnings.length > 0)
+      : previewFilter === 'duplicates'
+        ? mcqDrafts.filter((d) => draftDuplicateMap.has(d.tempId))
+        : mcqDrafts;
+  const visibleSubjs =
+    previewFilter === 'warnings'
+      ? subjDrafts.filter((d) => d.warnings.length > 0)
+      : previewFilter === 'duplicates'
+        ? subjDrafts.filter((d) => draftDuplicateMap.has(d.tempId))
+        : subjDrafts;
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 font-sans">
@@ -647,17 +719,43 @@ export function ExamImportModal({
                 <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800">
                   ✅ สมบูรณ์ {readyCount} ข้อ
                 </span>
+                {duplicateCount > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreviewFilter((f) => (f === 'duplicates' ? 'all' : 'duplicates'))
+                      }
+                      className={`text-xs font-bold px-2.5 py-1 rounded-full border cursor-pointer transition-colors flex items-center gap-1 ${
+                        previewFilter === 'duplicates'
+                          ? 'bg-purple-700 text-white border-purple-800'
+                          : 'bg-purple-100 text-purple-900 border-purple-300 hover:bg-purple-200'
+                      }`}
+                    >
+                      <Copy size={12} /> ซ้ำ {duplicateCount} ข้อ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRemoveAllDuplicates}
+                      className="text-xs font-bold px-3 py-1 rounded-full bg-red-600 hover:bg-red-700 text-white shadow-2xs cursor-pointer"
+                    >
+                      ตัดข้อซ้ำออกทั้งหมด ({duplicateCount})
+                    </button>
+                  </>
+                )}
                 {warningCount > 0 && (
                   <button
                     type="button"
-                    onClick={() => setShowOnlyWarnings((v) => !v)}
+                    onClick={() =>
+                      setPreviewFilter((f) => (f === 'warnings' ? 'all' : 'warnings'))
+                    }
                     className={`text-xs font-bold px-2.5 py-1 rounded-full border cursor-pointer transition-colors ${
-                      showOnlyWarnings
+                      previewFilter === 'warnings'
                         ? 'bg-amber-600 text-white border-amber-700'
                         : 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
                     }`}
                   >
-                    ⚠️ ต้องตรวจสอบ {warningCount} ข้อ {showOnlyWarnings ? '(กำลังกรอง)' : '(คลิกเพื่อกรอง)'}
+                    ⚠️ ต้องตรวจสอบ {warningCount} ข้อ {previewFilter === 'warnings' ? '(กำลังกรอง)' : ''}
                   </button>
                 )}
               </div>
@@ -701,11 +799,16 @@ export function ExamImportModal({
                 visibleMcqs.map((draft) => {
                   const origIdx = mcqDrafts.findIndex((d) => d.tempId === draft.tempId);
                   const hasWarn = draft.warnings.length > 0;
+                  const dupInfo = draftDuplicateMap.get(draft.tempId);
                   return (
                     <div
                       key={draft.tempId}
                       className={`bg-white rounded-2xl p-4 border-2 shadow-2xs space-y-3 ${
-                        hasWarn ? 'border-amber-300 bg-amber-50/20' : 'border-slate-200'
+                        dupInfo
+                          ? 'border-purple-300 bg-purple-50/25'
+                          : hasWarn
+                            ? 'border-amber-300 bg-amber-50/20'
+                            : 'border-slate-200'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -713,6 +816,11 @@ export function ExamImportModal({
                           <span className="text-xs font-bold px-2.5 py-0.5 rounded-lg bg-blue-100 text-blue-900">
                             ข้อที่ {origIdx + 1}
                           </span>
+                          {dupInfo && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-purple-100 text-purple-900 border border-purple-300 flex items-center gap-1">
+                              <Copy size={12} /> {dupInfo.label}
+                            </span>
+                          )}
                           {hasWarn ? (
                             draft.warnings.map((w, wi) => (
                               <span
@@ -722,11 +830,11 @@ export function ExamImportModal({
                                 <AlertTriangle size={12} /> {w}
                               </span>
                             ))
-                          ) : (
+                          ) : !dupInfo ? (
                             <span className="text-[11px] font-bold text-emerald-700 flex items-center gap-1">
                               <CheckCircle2 size={13} /> พร้อมนำเข้า
                             </span>
-                          )}
+                          ) : null}
                         </div>
                         <button
                           type="button"
@@ -833,15 +941,25 @@ export function ExamImportModal({
               {mode === 'subj' &&
                 visibleSubjs.map((draft) => {
                   const origIdx = subjDrafts.findIndex((d) => d.tempId === draft.tempId);
+                  const dupInfo = draftDuplicateMap.get(draft.tempId);
                   return (
                     <div
                       key={draft.tempId}
-                      className="bg-white rounded-2xl p-4 border-2 border-slate-200 shadow-2xs space-y-2.5"
+                      className={`bg-white rounded-2xl p-4 border-2 shadow-2xs space-y-2.5 ${
+                        dupInfo ? 'border-purple-300 bg-purple-50/25' : 'border-slate-200'
+                      }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold px-2.5 py-0.5 rounded-lg bg-blue-100 text-blue-900">
-                          อัตนัยข้อที่ {origIdx + 1}
-                        </span>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-bold px-2.5 py-0.5 rounded-lg bg-blue-100 text-blue-900">
+                            อัตนัยข้อที่ {origIdx + 1}
+                          </span>
+                          {dupInfo && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-purple-100 text-purple-900 border border-purple-300 flex items-center gap-1">
+                              <Copy size={12} /> {dupInfo.label}
+                            </span>
+                          )}
+                        </div>
                         <button
                           type="button"
                           onClick={() => setSubjDrafts((prev) => prev.filter((x) => x.tempId !== draft.tempId))}

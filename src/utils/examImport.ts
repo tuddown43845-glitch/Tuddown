@@ -840,3 +840,137 @@ export function finalizeSubjDrafts(drafts: ParsedSubjDraft[], courseId: string):
       examType: d.examType,
     }));
 }
+
+// --- DUPLICATE DETECTION UTILITIES ---
+
+/**
+ * Normalize question text into a canonical fingerprint so identical questions
+ * differing only by spacing, line breaks, Thai digits, leading numbering,
+ * or inline formatting tags (** / == / [box]) are accurately flagged as duplicates.
+ */
+export function normalizeQuestionFingerprint(text: string): string {
+  if (!text) return '';
+  return convertThaiDigits(cleanInvisibleChars(text))
+    .replace(/\[\/?(?:box|quote|hl|highlight|yellow|red|blue|green|orange|amber|purple|badge|bold|underline|mark)\]/gi, '')
+    .replace(/<\/?(?:b|strong|i|em|u|mark|del|s)>/gi, '')
+    .replace(/(\*\*|__|==|~~)/g, '')
+    .replace(/^(?:ข้อ\s*(?:ที่)?\s*|q(?:uestion)?\s*\.?\s*)?\d{1,3}\s*[\.\)\]]\s*/i, '')
+    .replace(/[\s\p{P}]+/gu, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Character bigram Dice similarity (0..1) — works great for Thai without word segmentation!
+ */
+export function computeTextSimilarity(a: string, b: string): number {
+  const fa = normalizeQuestionFingerprint(a);
+  const fb = normalizeQuestionFingerprint(b);
+  if (!fa || !fb) return 0;
+  if (fa === fb) return 1;
+  if (fa.length < 4 || fb.length < 4) return 0;
+
+  // Quick length ratio prune to keep O(N^2) fast even for 500+ questions
+  const lenRatio = Math.min(fa.length, fb.length) / Math.max(fa.length, fb.length);
+  if (lenRatio < 0.72) return 0;
+
+  const bigramsA = new Map<string, number>();
+  for (let i = 0; i < fa.length - 1; i++) {
+    const bg = fa.slice(i, i + 2);
+    bigramsA.set(bg, (bigramsA.get(bg) || 0) + 1);
+  }
+
+  let intersection = 0;
+  for (let i = 0; i < fb.length - 1; i++) {
+    const bg = fb.slice(i, i + 2);
+    const count = bigramsA.get(bg) || 0;
+    if (count > 0) {
+      intersection++;
+      bigramsA.set(bg, count - 1);
+    }
+  }
+
+  return (2 * intersection) / (fa.length - 1 + (fb.length - 1));
+}
+
+export interface DuplicateGroup<T> {
+  groupId: string;
+  matchType: 'exact' | 'similar';
+  similarity: number; // 1.0 for exact, 0.85..0.99 for similar
+  items: { item: T; bankIndex: number }[];
+}
+
+/**
+ * Scan a question bank (MCQs or Subjectives) and return groups of exact (100%)
+ * and near-duplicate (>= similarityThreshold) questions.
+ */
+export function findDuplicateQuestionGroups<T extends { id: string; text: string }>(
+  items: T[],
+  similarityThreshold = 0.86,
+): DuplicateGroup<T>[] {
+  const groups: DuplicateGroup<T>[] = [];
+  const fingerprints = items.map((item) => normalizeQuestionFingerprint(item.text));
+  const assignedIds = new Set<string>();
+
+  // Pass 1: Exact normalized matches (O(N))
+  const exactBuckets = new Map<string, { item: T; bankIndex: number }[]>();
+  items.forEach((item, idx) => {
+    const fp = fingerprints[idx];
+    if (!fp) return;
+    const bucket = exactBuckets.get(fp) || [];
+    bucket.push({ item, bankIndex: idx });
+    exactBuckets.set(fp, bucket);
+  });
+
+  let groupCounter = 0;
+  exactBuckets.forEach((bucket) => {
+    if (bucket.length > 1) {
+      bucket.forEach((entry) => assignedIds.add(entry.item.id));
+      groups.push({
+        groupId: `dup_exact_${groupCounter++}`,
+        matchType: 'exact',
+        similarity: 1,
+        items: bucket,
+      });
+    }
+  });
+
+  // Pass 2: Near-duplicate matches among remaining items (skip if huge > 800 to keep UI instant)
+  const remaining = items
+    .map((item, idx) => ({ item, bankIndex: idx, fp: fingerprints[idx] }))
+    .filter((entry) => entry.fp.length >= 12 && !assignedIds.has(entry.item.id));
+
+  if (remaining.length <= 800) {
+    const usedNear = new Set<string>();
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      if (usedNear.has(a.item.id)) continue;
+
+      const cluster: { item: T; bankIndex: number }[] = [{ item: a.item, bankIndex: a.bankIndex }];
+      let minSim = 1;
+
+      for (let j = i + 1; j < remaining.length; j++) {
+        const b = remaining[j];
+        if (usedNear.has(b.item.id)) continue;
+        const sim = computeTextSimilarity(a.item.text, b.item.text);
+        if (sim >= similarityThreshold) {
+          cluster.push({ item: b.item, bankIndex: b.bankIndex });
+          usedNear.add(b.item.id);
+          if (sim < minSim) minSim = sim;
+        }
+      }
+
+      if (cluster.length > 1) {
+        usedNear.add(a.item.id);
+        groups.push({
+          groupId: `dup_sim_${groupCounter++}`,
+          matchType: 'similar',
+          similarity: minSim,
+          items: cluster,
+        });
+      }
+    }
+  }
+
+  return groups;
+}

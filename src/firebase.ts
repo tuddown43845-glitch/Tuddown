@@ -333,6 +333,51 @@ export const deleteSingleDoc = async (
 };
 
 /**
+ * Delete multiple documents by their logical `id`s cleanly (handles both deterministic and legacy random Firestore IDs).
+ */
+export const deleteBatchDocs = async (
+  name: SharedCollectionName,
+  itemIds: string[],
+): Promise<boolean> => {
+  if (itemIds.length === 0) return true;
+  const path = `exam_${name}`;
+  try {
+    const idSet = new Set(itemIds.map(String));
+    const ref = getCollectionRef(name);
+    const actions: BatchAction[] = [];
+    const seenPaths = new Set<string>();
+
+    // Delete deterministic doc IDs directly
+    itemIds.forEach((id) => {
+      const safeDocId = String(id).replace(/\//g, '_');
+      const directRef = doc(ref, safeDocId);
+      if (!seenPaths.has(directRef.path)) {
+        actions.push({ type: 'delete', ref: directRef });
+        seenPaths.add(directRef.path);
+      }
+    });
+
+    // Also match any legacy random-ID docs whose `id` field matches
+    const snap = await getDocs(ref);
+    snap.docs.forEach((d) => {
+      const logicalId = String(d.data().id ?? d.id);
+      if (idSet.has(logicalId) && !seenPaths.has(d.ref.path)) {
+        actions.push({ type: 'delete', ref: d.ref });
+        seenPaths.add(d.ref.path);
+      }
+    });
+
+    if (actions.length > 0) {
+      await commitActions(actions, path);
+    }
+    return true;
+  } catch (error) {
+    console.error(`deleteBatchDocs ${path} error:`, error);
+    return false;
+  }
+};
+
+/**
  * Delete ALL documents belonging to a specific courseId (never touches other teachers' courses!).
  */
 export const deleteDocsByCourse = async (

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Component } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Component } from 'react';
 import { 
   AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, 
   Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw, Copy, Check, 
@@ -15,6 +15,7 @@ import {
   saveSingleDoc,
   saveBatchDocs,
   deleteSingleDoc,
+  deleteBatchDocs,
   deleteDocsByCourse,
   saveCourseSettings,
   fetchCoursesOnce,
@@ -61,6 +62,8 @@ import {
   TeacherManagementPanel,
 } from './components/SuperAdminPanels';
 import { ExamImportModal } from './components/ExamImportModal';
+import { DuplicateScannerModal } from './components/DuplicateScannerModal';
+import { normalizeQuestionFingerprint } from './utils/examImport';
 
 // --- MOCK INITIAL DATA ---
 const INITIAL_STUDENTS: Student[] = [
@@ -1129,6 +1132,17 @@ export default function App() {
     );
   };
 
+  const deleteMcqsBatch = async (mcqIds: string[]) => {
+    if (mcqIds.length === 0) return;
+    const idSet = new Set(mcqIds);
+    setMcqs((prev) => prev.filter((m) => !idSet.has(m.id)));
+    try {
+      await deleteBatchDocs('mcqs', mcqIds);
+    } catch (error) {
+      showSyncError('ลบข้อสอบปรนัยที่ซ้ำ', error);
+    }
+  };
+
   const clearCourseMcqs = () => {
     setMcqs([]);
     void deleteDocsByCourse('mcqs', activeCourseId).catch((error) =>
@@ -1164,6 +1178,17 @@ export default function App() {
     void deleteSingleDoc('subjs', subjId).catch((error) =>
       showSyncError('ลบข้อสอบอัตนัย', error),
     );
+  };
+
+  const deleteSubjsBatch = async (subjIds: string[]) => {
+    if (subjIds.length === 0) return;
+    const idSet = new Set(subjIds);
+    setSubjs((prev) => prev.filter((s) => !idSet.has(s.id)));
+    try {
+      await deleteBatchDocs('subjs', subjIds);
+    } catch (error) {
+      showSyncError('ลบข้อสอบอัตนัยที่ซ้ำ', error);
+    }
   };
 
   const clearCourseSubjs = () => {
@@ -1503,11 +1528,13 @@ export default function App() {
           onSaveMcqItem={saveMcqItem}
           onSaveMcqsBatch={saveMcqsBatch}
           onDeleteMcqItem={deleteMcqItem}
+          onDeleteMcqsBatch={deleteMcqsBatch}
           onClearCourseMcqs={clearCourseMcqs}
           subjs={subjs}
           onSaveSubjItem={saveSubjItem}
           onSaveSubjsBatch={saveSubjsBatch}
           onDeleteSubjItem={deleteSubjItem}
+          onDeleteSubjsBatch={deleteSubjsBatch}
           onClearCourseSubjs={clearCourseSubjs}
           submissions={submissions}
           onSaveGradedSubmission={handleSaveGradedSubmission}
@@ -2925,11 +2952,13 @@ function AdminView({
   onSaveMcqItem,
   onSaveMcqsBatch,
   onDeleteMcqItem,
+  onDeleteMcqsBatch,
   onClearCourseMcqs,
   subjs, 
   onSaveSubjItem,
   onSaveSubjsBatch,
   onDeleteSubjItem,
+  onDeleteSubjsBatch,
   onClearCourseSubjs,
   submissions, 
   onSaveGradedSubmission,
@@ -3052,6 +3081,31 @@ function AdminView({
     mode: 'mcq' | 'subj';
     initialSource: 'word' | 'excel' | 'text';
   } | null>(null);
+  const [duplicateScannerMode, setDuplicateScannerMode] = useState<'mcq' | 'subj' | null>(null);
+
+  const mcqExactDupCount = useMemo(() => {
+    const seen = new Set<string>();
+    let dups = 0;
+    for (const m of mcqs as MCQ[]) {
+      const fp = normalizeQuestionFingerprint(m.text);
+      if (!fp) continue;
+      if (seen.has(fp)) dups++;
+      else seen.add(fp);
+    }
+    return dups;
+  }, [mcqs]);
+
+  const subjExactDupCount = useMemo(() => {
+    const seen = new Set<string>();
+    let dups = 0;
+    for (const s of subjs as Subjective[]) {
+      const fp = normalizeQuestionFingerprint(s.text);
+      if (!fp) continue;
+      if (seen.has(fp)) dups++;
+      else seen.add(fp);
+    }
+    return dups;
+  }, [subjs]);
   const [editingMcq, setEditingMcq] = useState<MCQ | null>(null);
   const [isAddingMcq, setIsAddingMcq] = useState(false);
   const [newMcq, setNewMcq] = useState<MCQ>({ id: '', text: '', options: ['', '', '', '', ''], correctIndex: 0, classGroup: '6/3' });
@@ -4091,6 +4145,22 @@ function AdminView({
                     <Trash2 size={16} /> ลบทั้งหมด
                   </button>
                   <button
+                    onClick={() => setDuplicateScannerMode('mcq')}
+                    disabled={mcqs.length < 2}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                      mcqExactDupCount > 0
+                        ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-2xs ring-2 ring-purple-200'
+                        : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200'
+                    }`}
+                  >
+                    <Copy size={16} /> ตรวจข้อสอบซ้ำ
+                    {mcqExactDupCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full text-[11px] font-bold bg-white text-purple-700">
+                        {mcqExactDupCount}
+                      </span>
+                    )}
+                  </button>
+                  <button
                     onClick={() => setImportModalConfig({ mode: 'mcq', initialSource: 'word' })}
                     className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium cursor-pointer shadow-2xs"
                   >
@@ -4486,6 +4556,22 @@ function AdminView({
                 <div className="flex gap-2 items-center flex-wrap">
                   <button onClick={() => setConfirmDeleteAllSubjs(true)} className="flex items-center gap-2 px-3.5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm cursor-pointer">
                     <Trash2 size={16} /> ลบทั้งหมด
+                  </button>
+                  <button
+                    onClick={() => setDuplicateScannerMode('subj')}
+                    disabled={subjs.length < 2}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                      subjExactDupCount > 0
+                        ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-2xs ring-2 ring-purple-200'
+                        : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200'
+                    }`}
+                  >
+                    <Copy size={16} /> ตรวจข้อสอบซ้ำ
+                    {subjExactDupCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full text-[11px] font-bold bg-white text-purple-700">
+                        {subjExactDupCount}
+                      </span>
+                    )}
                   </button>
                   <button
                     onClick={() => setImportModalConfig({ mode: 'subj', initialSource: 'word' })}
@@ -5217,6 +5303,8 @@ function AdminView({
               : 'ทั้งหมด'
           }
           defaultExamType={settings.currentExamType || 'general'}
+          existingMcqs={mcqs}
+          existingSubjs={subjs}
           onClose={() => setImportModalConfig(null)}
           onConfirmImportMcqs={(items) => {
             onSaveMcqsBatch(items);
@@ -5226,6 +5314,44 @@ function AdminView({
             onSaveSubjsBatch(items);
             alert(`นำเข้าข้อสอบอัตนัยสำเร็จ ${items.length} ข้อ เข้าสู่รายวิชา ${activeCourse?.name || ''}`);
           }}
+        />
+      )}
+
+      {duplicateScannerMode && (
+        <DuplicateScannerModal
+          mode={duplicateScannerMode}
+          courseName={activeCourse?.name || 'รายวิชาปัจจุบัน'}
+          mcqs={mcqs}
+          subjs={subjs}
+          activeExamIdSet={duplicateScannerMode === 'mcq' ? activeExamMcqSet : activeExamSubjSet}
+          onDeleteIds={async (ids) => {
+            if (ids.length === 0) return;
+            const idSet = new Set(ids);
+            if (duplicateScannerMode === 'mcq') {
+              await onDeleteMcqsBatch(ids);
+              setSelectedMcqs((prev) => {
+                const next = new Set(prev);
+                ids.forEach((id) => next.delete(id));
+                return next;
+              });
+              const remainingSelected = (settings.selectedMcqIds || []).filter((id: string) => !idSet.has(id));
+              if (remainingSelected.length !== (settings.selectedMcqIds || []).length) {
+                saveSettings({ ...settings, selectedMcqIds: remainingSelected });
+              }
+            } else {
+              await onDeleteSubjsBatch(ids);
+              setSelectedSubjs((prev) => {
+                const next = new Set(prev);
+                ids.forEach((id) => next.delete(id));
+                return next;
+              });
+              const remainingSelected = (settings.selectedSubjIds || []).filter((id: string) => !idSet.has(id));
+              if (remainingSelected.length !== (settings.selectedSubjIds || []).length) {
+                saveSettings({ ...settings, selectedSubjIds: remainingSelected });
+              }
+            }
+          }}
+          onClose={() => setDuplicateScannerMode(null)}
         />
       )}
 
