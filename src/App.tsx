@@ -3,157 +3,70 @@ import {
   AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, 
   Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw, Copy, Check, 
   Printer, FileCheck, Archive, ArchiveRestore, FileDown, Highlighter, Bold, Italic, 
-  Underline, Eye, BookOpen, Search, ListChecks
+  Underline, Eye, BookOpen, Search, ListChecks, Users, Link2, ShieldCheck
 } from 'lucide-react';
-import { replaceSharedCollection, subscribeSharedCollection, upsertSharedItems, saveSubmissionDirectly, flushPendingSubmissions, deleteSubmissionDirectly, deleteSubmissionsBatch, clearAllSubmissionsDirectly, type SharedCollectionName } from './firebase';
+import {
+  replaceSharedCollection,
+  subscribeSharedCollection,
+  subscribeCourseCollection,
+  subscribeCourseSettings,
+  subscribeAllCourses,
+  subscribeAllSettings,
+  saveSingleDoc,
+  saveBatchDocs,
+  deleteSingleDoc,
+  deleteDocsByCourse,
+  saveCourseSettings,
+  fetchCoursesOnce,
+  fetchAllSettingsOnce,
+  findStudentById,
+  verifyTeacherLogin,
+  fetchCourseQuestionsOnce,
+  fetchStudentSubmissionForCourse,
+  saveSubmissionDirectly,
+  flushPendingSubmissions,
+  deleteSubmissionDirectly,
+  deleteSubmissionsBatch,
+  clearAllSubmissionsDirectly,
+  type SharedCollectionName,
+} from './firebase';
+import {
+  DEFAULT_COURSE,
+  DEFAULT_COURSE_ID,
+  SUPER_ADMIN_USERNAME,
+  courseMatchesStudentClass,
+  createDefaultSettings,
+  formatCourseClasses,
+  formatCourseDropdownLabel,
+  getSettingsDocId,
+  hashPassword,
+  shuffleArray,
+  selectExamQuestions,
+  sortClassNames,
+  matchesClassGroup,
+  matchesExamType,
+  getEligibleMcqs,
+  getEligibleSubjs,
+  type Course,
+  type MCQ,
+  type Settings,
+  type Student,
+  type Subjective,
+  type Submission,
+  type Teacher,
+} from './types';
+import {
+  ClassPickerField,
+  CourseManagementPanel,
+  TeacherManagementPanel,
+} from './components/SuperAdminPanels';
 import mammoth from 'mammoth';
-
-// --- TYPES ---
-type Settings = {
-  id: string;
-  isOpen: boolean;
-  currentExamType: 'midterm' | 'final' | 'general';
-  examFormat?: 'both' | 'mcq_only' | 'subj_only';
-  maxMcqCount?: number; // 0 หรือ undefined = ทั้งหมดในคลัง
-  maxSubjCount?: number; // 0 หรือ undefined = ทั้งหมดในคลัง
-  questionSelectionMode?: 'random' | 'order'; // 'random' (สุ่มข้อสอบ) หรือ 'order' (เรียงตามลำดับคลัง)
-  useSelectedMcqs?: boolean; // true = ให้นักเรียนทำเฉพาะข้อสอบปรนัยที่ครูเลือกไว้ โดยไม่ต้องลบข้ออื่น
-  selectedMcqIds?: string[]; // รายการ ID ข้อสอบปรนัยที่ครูเลือกให้ออกสอบ
-  useSelectedSubjs?: boolean; // true = ให้นักเรียนทำเฉพาะข้อสอบอัตนัยที่ครูเลือกไว้ โดยไม่ต้องลบข้ออื่น
-  selectedSubjIds?: string[]; // รายการ ID ข้อสอบอัตนัยที่ครูเลือกให้ออกสอบ
-};
-
-type Student = {
-  id: string;
-  name: string;
-  class: string;
-  number: number;
-};
-
-type MCQ = {
-  id: string;
-  text: string;
-  options: string[]; // Always 5 options
-  correctIndex: number;
-  image?: string;
-  classGroup: string;
-  examType?: 'midterm' | 'final' | 'general';
-};
-
-type Subjective = {
-  id: string;
-  text: string;
-  image?: string;
-  classGroup: string;
-  examType?: 'midterm' | 'final' | 'general';
-};
-
-type Submission = {
-  id: string;
-  confirmationCode?: string;
-  studentId: string;
-  studentName?: string;
-  studentClass?: string;
-  studentNumber?: number;
-  classGroup: string;
-  mcqAnswers: Record<string, string>; // questionId -> selectedOptionText
-  subjAnswers: Record<string, string>; // questionId -> text
-  mcqScore: number;
-  timeTakenMs: number;
-  cheatCount: number;
-  submittedAt: number;
-  subjScores: Record<string, number>; // Admin grading
-  isArchived?: boolean;
-  archivedAt?: number;
-  totalMcqCount?: number;
-  totalSubjCount?: number;
-  assignedMcqIds?: string[];
-  assignedSubjIds?: string[];
-};
 
 // --- MOCK INITIAL DATA ---
 const INITIAL_STUDENTS: Student[] = [
   { id: '1001', name: 'นาย สมชาย ใจดี', class: '6/3', number: 1 },
   { id: '1002', name: 'นางสาว สมหญิง รักเรียน', class: '6/8', number: 1 },
 ];
-
-const generateMCQs = (cls: string): MCQ[] => {
-  return Array.from({ length: 45 }).map((_, i) => ({
-    id: `mcq_${cls}_${i}`,
-    text: `คำถามปรนัยข้อที่ ${i + 1} (วิชาสังคมศึกษา ม.${cls}) - ตัวอย่างคำถามทดสอบระบบ?`,
-    options: ['คำตอบที่ 1', 'คำตอบที่ 2', 'คำตอบที่ 3', 'คำตอบที่ 4', 'คำตอบที่ 5'],
-    correctIndex: 0,
-    classGroup: cls
-  }));
-};
-
-const generateSubjs = (cls: string): Subjective[] => {
-  return Array.from({ length: 10 }).map((_, i) => ({
-    id: `subj_${cls}_${i}`,
-    text: `คำถามอัตนัยข้อที่ ${i + 1} (วิชาสังคมศึกษา ม.${cls}) - อธิบายเพิ่มเติม?`,
-    classGroup: cls
-  }));
-};
-
-const INITIAL_MCQS = [...generateMCQs('6/3'), ...generateMCQs('6/8')];
-const INITIAL_SUBJS = [...generateSubjs('6/3'), ...generateSubjs('6/8')];
-
-// --- UTILS ---
-const shuffleArray = <T,>(array: T[]): T[] => {
-  const newArr = [...array];
-  for (let i = newArr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
-  }
-  return newArr;
-};
-
-// ฟังก์ชันคัดเลือกข้อสอบตามจำนวนที่กำหนด (เช่น คลังมี 60 ข้อ คัดเลือกมา 45 ข้อ)
-const selectExamQuestions = <T,>(
-  items: T[], 
-  limitCount?: number, 
-  selectionMode: 'random' | 'order' = 'random'
-): T[] => {
-  if (!items || items.length === 0) return [];
-  if (!limitCount || limitCount <= 0 || limitCount >= items.length) {
-    return items;
-  }
-  if (selectionMode === 'order') {
-    return items.slice(0, limitCount);
-  }
-  return shuffleArray(items).slice(0, limitCount);
-};
-
-const matchesClassGroup = (itemClassGroup?: string, targetClass?: string) => {
-  if (!itemClassGroup) return true;
-  const normalized = itemClassGroup.trim();
-  if (normalized === 'ทั้งหมด' || normalized.toLowerCase() === 'all' || normalized.includes('ทั้งหมด') || normalized.includes('all')) return true;
-  if (!targetClass) return false;
-  return normalized.includes(targetClass);
-};
-
-const matchesExamType = (itemExamType?: string, currentExamType?: string) => {
-  if (!itemExamType || itemExamType === 'general' || !currentExamType || currentExamType === 'general') return true;
-  return itemExamType === currentExamType;
-};
-
-const getEligibleMcqs = (allMcqs: MCQ[], settings: Settings, targetClass?: string): MCQ[] => {
-  if (settings.examFormat === 'subj_only') return [];
-  const selectedSet = settings.useSelectedMcqs ? new Set(settings.selectedMcqIds || []) : null;
-  return allMcqs.filter(m => {
-    if (selectedSet && !selectedSet.has(m.id)) return false;
-    return matchesExamType(m.examType, settings.currentExamType) && matchesClassGroup(m.classGroup, targetClass);
-  });
-};
-
-const getEligibleSubjs = (allSubjs: Subjective[], settings: Settings, targetClass?: string): Subjective[] => {
-  if (settings.examFormat === 'mcq_only') return [];
-  const selectedSet = settings.useSelectedSubjs ? new Set(settings.selectedSubjIds || []) : null;
-  return allSubjs.filter(s => {
-    if (selectedSet && !selectedSet.has(s.id)) return false;
-    return matchesExamType(s.examType, settings.currentExamType) && matchesClassGroup(s.classGroup, targetClass);
-  });
-};
 
 // --- FORMATTED TEXT PARSER & RENDERER ---
 function parseInlineFormatting(str: string): React.ReactNode[] {
@@ -786,46 +699,39 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 
 // --- APP COMPONENT ---
 export default function App() {
-  // เริ่มจากข้อมูลในเครื่องนี้ก่อน แล้ว Firestore จะส่งข้อมูลกลางมาแทนที่ทันที
+  // Multi-Teacher & Multi-Course Central State
+  const [courses, setCourses] = useState<Course[]>([DEFAULT_COURSE]);
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [allSettingsMap, setAllSettingsMap] = useState<Record<string, Settings>>({});
+  const [activeCourseId, setActiveCourseId] = useState<string>(DEFAULT_COURSE_ID);
+  const [urlLockedCourseCode, setUrlLockedCourseCode] = useState<string | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('course')?.trim() || null;
+    } catch {
+      return null;
+    }
+  });
+
+  // Course-scoped data (Students only load once on login; Admin/Teachers subscribe scoped to activeCourseId)
   const [students, setStudents] = useState<Student[]>(() =>
     readLocalArray('social_students', INITIAL_STUDENTS),
   );
-  const [mcqs, setMcqs] = useState<MCQ[]>(() =>
-    readLocalArray('social_mcqs', INITIAL_MCQS),
-  );
-  const [subjs, setSubjs] = useState<Subjective[]>(() =>
-    readLocalArray('social_subjs', INITIAL_SUBJS),
-  );
-  const [submissions, setSubmissions] = useState<Submission[]>(() =>
-    readLocalArray('social_submissions', []),
-  );
-  const [settings, setSettings] = useState<Settings>(() => {
-    try {
-      const saved = localStorage.getItem('social_settings');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return { 
-      id: 'system_settings', 
-      isOpen: true, 
-      currentExamType: 'general', 
-      examFormat: 'both',
-      maxMcqCount: 0,
-      maxSubjCount: 0,
-      questionSelectionMode: 'random',
-      useSelectedMcqs: false,
-      selectedMcqIds: [],
-      useSelectedSubjs: false,
-      selectedSubjIds: []
-    };
-  });
+  const [mcqs, setMcqs] = useState<MCQ[]>([]);
+  const [subjs, setSubjs] = useState<Subjective[]>([]);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [settings, setSettings] = useState<Settings>(() => createDefaultSettings(DEFAULT_COURSE_ID));
 
   // Auth State
   const [currentUser, setCurrentUser] = useState<Student | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [adminRole, setAdminRole] = useState<'super_admin' | 'teacher' | null>(null);
+  const [currentTeacher, setCurrentTeacher] = useState<Teacher | null>(null);
   const [currentView, setCurrentView] = useState<'instructions' | 'login' | 'student-info' | 'exam' | 'result' | 'admin'>('instructions');
-  // ชุดข้อสอบที่คัดเลือกมาให้นักเรียนทำในรอบนี้ (คงที่ตลอดการสอบ)
+
+  // Student-specific scoped state (no full submissions download!)
+  const [studentExistingSubmission, setStudentExistingSubmission] = useState<Submission | null>(null);
   const [activeExamQuestions, setActiveExamQuestions] = useState<{ mcqs: MCQ[]; subjs: Subjective[] } | null>(null);
-  // เก็บผลการสอบครั้งที่เพิ่งส่งโดยตรง ป้องกันหน้าสรุปหยิบผลเก่าของนักเรียนคนเดิม
   const [currentSubmission, setCurrentSubmission] = useState<Submission | null>(null);
   const [submissionSyncStatus, setSubmissionSyncStatus] = useState<'synced' | 'local_only' | 'pending'>('pending');
 
@@ -835,102 +741,187 @@ export default function App() {
     subjs: 'loading',
     submissions: 'loading',
     settings: 'loading',
-  });
-
-  const hadLocalData = useRef<Record<SharedCollectionName, boolean>>({
-    students: Boolean(localStorage.getItem('social_students')),
-    mcqs: Boolean(localStorage.getItem('social_mcqs')),
-    subjs: Boolean(localStorage.getItem('social_subjs')),
-    submissions: Boolean(localStorage.getItem('social_submissions')),
-    settings: Boolean(localStorage.getItem('social_settings')),
-  });
-  const migrationStarted = useRef<Record<SharedCollectionName, boolean>>({
-    students: false,
-    mcqs: false,
-    subjs: false,
-    submissions: false,
-    settings: false,
+    teachers: 'ready',
+    courses: 'loading',
   });
 
   const updateRemoteStatus = (name: SharedCollectionName, status: RemoteStatus) => {
     setRemoteStatus((previous) => ({ ...previous, [name]: status }));
   };
 
-  // รับข้อมูลกลางแบบเรียลไทม์ ทุกเครื่องจึงเห็นข้อสอบชุดเดียวกัน
+  const activeCourse =
+    courses.find((c) => c.id === activeCourseId) ||
+    courses[0] ||
+    DEFAULT_COURSE;
+
+  // 1. Lightweight initial boot for ALL users (1-time fetch of courses & open/close statuses)
+  // Does NOT attach heavy real-time listeners for students -> supports hundreds of concurrent students cleanly!
   useEffect(() => {
-    const subscriptions = [
+    let mounted = true;
+    const bootstrapCourses = async () => {
+      try {
+        const [loadedCourses, loadedSettings] = await Promise.all([
+          fetchCoursesOnce(),
+          fetchAllSettingsOnce(),
+        ]);
+        if (!mounted) return;
+        setCourses(loadedCourses);
+        setAllSettingsMap(loadedSettings);
+        updateRemoteStatus('courses', 'ready');
+
+        if (urlLockedCourseCode) {
+          const matched = loadedCourses.find(
+            (c) =>
+              c.code.toLowerCase() === urlLockedCourseCode.toLowerCase() ||
+              c.id === urlLockedCourseCode,
+          );
+          if (matched) {
+            setActiveCourseId(matched.id);
+          }
+        }
+      } catch (err) {
+        console.error('Bootstrap courses error:', err);
+        updateRemoteStatus('courses', 'error');
+      }
+    };
+    void bootstrapCourses();
+    return () => {
+      mounted = false;
+    };
+  }, [urlLockedCourseCode]);
+
+  // 2. Single-document real-time listener ONLY for the active course's Settings (1 doc read per change)
+  useEffect(() => {
+    if (!activeCourseId) return;
+    const unsub = subscribeCourseSettings(
+      activeCourseId,
+      (courseSettings) => {
+        setSettings(courseSettings);
+        setAllSettingsMap((prev) => ({ ...prev, [activeCourseId]: courseSettings }));
+        updateRemoteStatus('settings', 'ready');
+        try {
+          localStorage.setItem(`exam_settings_${activeCourseId}`, JSON.stringify(courseSettings));
+        } catch {}
+      },
+      (error) => {
+        console.error('Firestore course settings error:', error);
+        updateRemoteStatus('settings', 'error');
+      },
+    );
+    return () => unsub();
+  }, [activeCourseId]);
+
+  // 3. Admin / Teacher ONLY real-time subscriptions (strictly scoped by role and activeCourseId!)
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const unsubs: (() => void)[] = [];
+
+    unsubs.push(
+      subscribeAllCourses(
+        (data) => {
+          setCourses(data);
+          updateRemoteStatus('courses', 'ready');
+          // Ensure Teacher stays on one of their own courses
+          if (adminRole === 'teacher' && currentTeacher) {
+            const myCourses = data.filter((c) => c.teacherId === currentTeacher.id);
+            if (myCourses.length > 0 && !myCourses.some((c) => c.id === activeCourseId)) {
+              setActiveCourseId(myCourses[0].id);
+            }
+          }
+        },
+        () => updateRemoteStatus('courses', 'error'),
+      ),
+    );
+
+    unsubs.push(
+      subscribeAllSettings(
+        (map) => setAllSettingsMap(map),
+        (err) => console.error('subscribeAllSettings error:', err),
+      ),
+    );
+
+    unsubs.push(
       subscribeSharedCollection<Student>(
         'students',
         (data) => {
           updateRemoteStatus('students', data.length > 0 ? 'ready' : 'empty');
           if (data.length > 0) {
             setStudents(data);
-            localStorage.setItem('social_students', JSON.stringify(data));
+            try {
+              localStorage.setItem('social_students', JSON.stringify(data));
+            } catch {}
           }
         },
-        (error) => {
-          console.error('Firestore students error:', error);
-          updateRemoteStatus('students', 'error');
-        },
+        () => updateRemoteStatus('students', 'error'),
       ),
-      subscribeSharedCollection<MCQ>(
+    );
+
+    if (adminRole === 'super_admin') {
+      unsubs.push(
+        subscribeSharedCollection<Teacher>(
+          'teachers',
+          (data) => {
+            setTeachers(data);
+            updateRemoteStatus('teachers', 'ready');
+          },
+          () => updateRemoteStatus('teachers', 'error'),
+        ),
+      );
+    }
+
+    return () => unsubs.forEach((u) => u());
+  }, [isAdmin, adminRole, currentTeacher]);
+
+  // 4. Admin / Teacher course-scoped subscriptions for activeCourseId (mcqs, subjs, submissions)
+  useEffect(() => {
+    if (!isAdmin || !activeCourseId) return;
+
+    // Prevent Teacher from subscribing to a course they do not own
+    if (adminRole === 'teacher' && currentTeacher) {
+      const ownsCourse = courses.some(
+        (c) => c.id === activeCourseId && c.teacherId === currentTeacher.id,
+      );
+      if (!ownsCourse) {
+        setMcqs([]);
+        setSubjs([]);
+        setSubmissions([]);
+        return;
+      }
+    }
+
+    const unsubs = [
+      subscribeCourseCollection<MCQ>(
         'mcqs',
+        activeCourseId,
         (data) => {
           updateRemoteStatus('mcqs', data.length > 0 ? 'ready' : 'empty');
-          if (data.length > 0) {
-            setMcqs(data);
-            localStorage.setItem('social_mcqs', JSON.stringify(data));
-          }
+          setMcqs(data);
         },
-        (error) => {
-          console.error('Firestore mcqs error:', error);
-          updateRemoteStatus('mcqs', 'error');
-        },
+        () => updateRemoteStatus('mcqs', 'error'),
       ),
-      subscribeSharedCollection<Subjective>(
+      subscribeCourseCollection<Subjective>(
         'subjs',
+        activeCourseId,
         (data) => {
           updateRemoteStatus('subjs', data.length > 0 ? 'ready' : 'empty');
-          if (data.length > 0) {
-            setSubjs(data);
-            localStorage.setItem('social_subjs', JSON.stringify(data));
-          }
+          setSubjs(data);
         },
-        (error) => {
-          console.error('Firestore subjs error:', error);
-          updateRemoteStatus('subjs', 'error');
-        },
+        () => updateRemoteStatus('subjs', 'error'),
       ),
-      subscribeSharedCollection<Submission>(
+      subscribeCourseCollection<Submission>(
         'submissions',
+        activeCourseId,
         (data) => {
           updateRemoteStatus('submissions', data.length > 0 ? 'ready' : 'empty');
           setSubmissions(data);
-          localStorage.setItem('social_submissions', JSON.stringify(data));
         },
-        (error) => {
-          console.error('Firestore submissions error:', error);
-          updateRemoteStatus('submissions', 'error');
-        },
-      ),
-      subscribeSharedCollection<Settings>(
-        'settings',
-        (data) => {
-          updateRemoteStatus('settings', data.length > 0 ? 'ready' : 'empty');
-          if (data.length > 0) {
-            setSettings(data[0]);
-            localStorage.setItem('social_settings', JSON.stringify(data[0]));
-          }
-        },
-        (error) => {
-          console.error('Firestore settings error:', error);
-          updateRemoteStatus('settings', 'error');
-        },
+        () => updateRemoteStatus('submissions', 'error'),
       ),
     ];
 
-    return () => subscriptions.forEach((unsubscribe) => unsubscribe());
-  }, []);
+    return () => unsubs.forEach((u) => u());
+  }, [isAdmin, adminRole, currentTeacher, activeCourseId, courses]);
 
   const showSyncError = (label: string, error: unknown) => {
     console.error(`Firestore ${label} sync error:`, error);
@@ -938,23 +929,19 @@ export default function App() {
     alert(`บันทึก ${label} ลงฐานข้อมูลกลางไม่สำเร็จ\n\n${message}`);
   };
 
-  // Save Data Helpers: บันทึกทั้งในเครื่องและฐานข้อมูลกลาง
+  // --- SUBMISSION HANDLERS ---
   const addSubmission = async (sub: Submission): Promise<{ success: boolean; error?: string }> => {
-    // 1. บันทึกผลสอบไว้ใน localStorage และ state ทันที
-    setSubmissions(prev => {
-      const exists = prev.some(p => p.id === sub.id);
-      const newData = exists ? prev.map(p => p.id === sub.id ? sub : p) : [...prev, sub];
-      localStorage.setItem('social_submissions', JSON.stringify(newData));
-      return newData;
-    });
-
-    // 2. ส่งขึ้นฐานข้อมูลกลางแบบ Direct Write พร้อมระบบ retry
-    const res = await saveSubmissionDirectly(sub);
+    const taggedSub: Submission = {
+      ...sub,
+      courseId: activeCourseId,
+      courseName: activeCourse.name,
+    };
+    setStudentExistingSubmission(taggedSub);
+    const res = await saveSubmissionDirectly(taggedSub);
     setSubmissionSyncStatus(res.success ? 'synced' : 'local_only');
     return res;
   };
 
-  // ดักจับการกู้คืนเน็ต และพยายามส่งผลสอบที่ค้างส่งขึ้นคลาวด์อัตโนมัติ
   useEffect(() => {
     const syncOffline = async () => {
       const count = await flushPendingSubmissions();
@@ -982,122 +969,268 @@ export default function App() {
       alert('ยังไม่สามารถเชื่อมต่อฐานข้อมูลได้ในขณะนี้ (อาจเป็นเพราะสัญญาณเน็ตขัดข้อง) แต่ระบบได้บันทึกข้อสอบไว้ในเครื่องแล้ว ไม่สูญหายแน่นอนครับ');
     }
   };
-  const saveSubmissions = (data: Submission[]) => {
-    setSubmissions(data);
-    localStorage.setItem('social_submissions', JSON.stringify(data));
-    void upsertSharedItems('submissions', data).catch((error) =>
-      showSyncError('ผลสอบ', error),
+
+  const handleSaveGradedSubmission = (updatedSub: Submission) => {
+    setSubmissions((prev) => prev.map((s) => (s.id === updatedSub.id ? updatedSub : s)));
+    void saveSingleDoc('submissions', updatedSub).catch((error) =>
+      showSyncError('คะแนนอัตนัย', error),
     );
   };
 
   const handleDeleteSubmission = async (submissionId: string): Promise<boolean> => {
     const ok = await deleteSubmissionDirectly(submissionId);
-    const remaining = submissions.filter(s => s.id !== submissionId);
-    setSubmissions(remaining);
-    localStorage.setItem('social_submissions', JSON.stringify(remaining));
+    setSubmissions((prev) => prev.filter((s) => s.id !== submissionId));
     return ok;
   };
 
   const handleDeleteMultipleSubmissions = async (submissionIds: string[]): Promise<boolean> => {
     const ok = await deleteSubmissionsBatch(submissionIds);
     const idSet = new Set(submissionIds);
-    const remaining = submissions.filter(s => !idSet.has(s.id));
-    setSubmissions(remaining);
-    localStorage.setItem('social_submissions', JSON.stringify(remaining));
+    setSubmissions((prev) => prev.filter((s) => !idSet.has(s.id)));
     return ok;
   };
 
   const handleClearAllSubmissions = async (): Promise<boolean> => {
-    const ok = await clearAllSubmissionsDirectly();
+    const ok = await clearAllSubmissionsDirectly(activeCourseId);
     setSubmissions([]);
-    localStorage.setItem('social_submissions', JSON.stringify([]));
     return ok;
   };
 
   const handleToggleArchiveSubmission = (submissionId: string) => {
-    const updated = submissions.map(s => {
-      if (s.id === submissionId) {
-        const nextArchived = !s.isArchived;
-        return {
-          ...s,
-          isArchived: nextArchived,
-          archivedAt: nextArchived ? Date.now() : undefined
-        };
-      }
-      return s;
-    });
-    setSubmissions(updated);
-    localStorage.setItem('social_submissions', JSON.stringify(updated));
-    void upsertSharedItems('submissions', updated).catch(error =>
+    const target = submissions.find((s) => s.id === submissionId);
+    if (!target) return;
+    const nextArchived = !target.isArchived;
+    const updatedTarget: Submission = {
+      ...target,
+      isArchived: nextArchived,
+      archivedAt: nextArchived ? Date.now() : undefined,
+    };
+    setSubmissions((prev) => prev.map((s) => (s.id === submissionId ? updatedTarget : s)));
+    void saveSingleDoc('submissions', updatedTarget).catch((error) =>
       showSyncError('จัดเก็บผลสอบ', error),
     );
   };
 
   const handleBulkArchiveSubmissions = (submissionIds: string[], archiveStatus: boolean) => {
     const idSet = new Set(submissionIds);
-    const updated = submissions.map(s => {
-      if (idSet.has(s.id)) {
-        return {
-          ...s,
-          isArchived: archiveStatus,
-          archivedAt: archiveStatus ? Date.now() : undefined
-        };
-      }
-      return s;
-    });
-    setSubmissions(updated);
-    localStorage.setItem('social_submissions', JSON.stringify(updated));
-    void upsertSharedItems('submissions', updated).catch(error =>
-      showSyncError('จัดเก็บผลสอบ', error),
+    const changedItems: Submission[] = [];
+    setSubmissions((prev) =>
+      prev.map((s) => {
+        if (idSet.has(s.id)) {
+          const nextItem: Submission = {
+            ...s,
+            isArchived: archiveStatus,
+            archivedAt: archiveStatus ? Date.now() : undefined,
+          };
+          changedItems.push(nextItem);
+          return nextItem;
+        }
+        return s;
+      }),
     );
+    if (changedItems.length > 0) {
+      void saveBatchDocs('submissions', changedItems).catch((error) =>
+        showSyncError('จัดเก็บผลสอบ', error),
+      );
+    }
   };
 
   const handleDownloadArchiveJSON = () => {
     const exportData = {
-      title: 'คลังจัดเก็บข้อมูลผลการสอบนักเรียน โรงเรียนบ้านม่วงพิทยาคม',
+      title: `คลังจัดเก็บข้อมูลผลการสอบ ${activeCourse.name} (${activeCourse.code})`,
+      courseId: activeCourseId,
+      courseCode: activeCourse.code,
+      courseName: activeCourse.name,
       exportedAt: new Date().toISOString(),
       examType: settings.currentExamType,
       examFormat: settings.examFormat || 'both',
       totalCount: submissions.length,
-      submissions: submissions
+      submissions,
     };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `exam_archive_backup_${settings.currentExamType}_${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `exam_archive_${activeCourse.code}_${settings.currentExamType}_${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+
+  // --- GRANULAR SINGLE-DOC & BATCH MUTATIONS (SAFE FOR MULTI-TEACHER CONCURRENCY) ---
   const saveSettings = (newSettings: Settings) => {
-    setSettings(newSettings);
-    localStorage.setItem('social_settings', JSON.stringify(newSettings));
-    void replaceSharedCollection('settings', [newSettings]).catch((error) =>
-      showSyncError('ตั้งค่าระบบ', error),
+    const normalized: Settings = {
+      ...newSettings,
+      id: getSettingsDocId(activeCourseId),
+      courseId: activeCourseId,
+    };
+    setSettings(normalized);
+    setAllSettingsMap((prev) => ({ ...prev, [activeCourseId]: normalized }));
+    void saveCourseSettings(activeCourseId, normalized).catch((error) =>
+      showSyncError('ตั้งค่ารายวิชา', error),
     );
   };
-  const saveStudents = (data: Student[]) => {
+
+  const saveStudentsBulk = (data: Student[]) => {
     setStudents(data);
-    localStorage.setItem('social_students', JSON.stringify(data));
+    try {
+      localStorage.setItem('social_students', JSON.stringify(data));
+    } catch {}
     void replaceSharedCollection('students', data).catch((error) =>
       showSyncError('รายชื่อนักเรียน', error),
     );
   };
-  const saveMcqs = (data: MCQ[]) => {
-    setMcqs(data);
-    localStorage.setItem('social_mcqs', JSON.stringify(data));
-    void replaceSharedCollection('mcqs', data).catch((error) =>
+
+  const saveSingleStudent = (student: Student) => {
+    setStudents((prev) => {
+      const exists = prev.some((s) => s.id === student.id);
+      return exists ? prev.map((s) => (s.id === student.id ? student : s)) : [...prev, student];
+    });
+    void saveSingleDoc('students', student).catch((error) =>
+      showSyncError('ข้อมูลนักเรียน', error),
+    );
+  };
+
+  const deleteSingleStudent = (studentId: string) => {
+    setStudents((prev) => prev.filter((s) => s.id !== studentId));
+    void deleteSingleDoc('students', studentId).catch((error) =>
+      showSyncError('ลบนักเรียน', error),
+    );
+  };
+
+  const saveMcqItem = (item: MCQ) => {
+    const tagged: MCQ = { ...item, courseId: activeCourseId };
+    setMcqs((prev) => {
+      const exists = prev.some((m) => m.id === tagged.id);
+      return exists ? prev.map((m) => (m.id === tagged.id ? tagged : m)) : [...prev, tagged];
+    });
+    void saveSingleDoc('mcqs', tagged, mcqs.length).catch((error) =>
       showSyncError('ข้อสอบปรนัย', error),
     );
   };
-  const saveSubjs = (data: Subjective[]) => {
-    setSubjs(data);
-    localStorage.setItem('social_subjs', JSON.stringify(data));
-    void replaceSharedCollection('subjs', data).catch((error) =>
+
+  const saveMcqsBatch = (items: MCQ[]) => {
+    const tagged = items.map((m) => ({ ...m, courseId: activeCourseId }));
+    setMcqs((prev) => {
+      const map = new Map(prev.map((m) => [m.id, m]));
+      tagged.forEach((m) => map.set(m.id, m));
+      return Array.from(map.values());
+    });
+    void saveBatchDocs('mcqs', tagged, mcqs.length).catch((error) =>
+      showSyncError('นำเข้าข้อสอบปรนัย', error),
+    );
+  };
+
+  const deleteMcqItem = (mcqId: string) => {
+    setMcqs((prev) => prev.filter((m) => m.id !== mcqId));
+    void deleteSingleDoc('mcqs', mcqId).catch((error) =>
+      showSyncError('ลบข้อสอบปรนัย', error),
+    );
+  };
+
+  const clearCourseMcqs = () => {
+    setMcqs([]);
+    void deleteDocsByCourse('mcqs', activeCourseId).catch((error) =>
+      showSyncError('ลบข้อสอบปรนัยทั้งหมด', error),
+    );
+  };
+
+  const saveSubjItem = (item: Subjective) => {
+    const tagged: Subjective = { ...item, courseId: activeCourseId };
+    setSubjs((prev) => {
+      const exists = prev.some((s) => s.id === tagged.id);
+      return exists ? prev.map((s) => (s.id === tagged.id ? tagged : s)) : [...prev, tagged];
+    });
+    void saveSingleDoc('subjs', tagged, subjs.length).catch((error) =>
       showSyncError('ข้อสอบอัตนัย', error),
     );
+  };
+
+  const saveSubjsBatch = (items: Subjective[]) => {
+    const tagged = items.map((s) => ({ ...s, courseId: activeCourseId }));
+    setSubjs((prev) => {
+      const map = new Map(prev.map((s) => [s.id, s]));
+      tagged.forEach((s) => map.set(s.id, s));
+      return Array.from(map.values());
+    });
+    void saveBatchDocs('subjs', tagged, subjs.length).catch((error) =>
+      showSyncError('อัปเดตข้อสอบอัตนัย', error),
+    );
+  };
+
+  const deleteSubjItem = (subjId: string) => {
+    setSubjs((prev) => prev.filter((s) => s.id !== subjId));
+    void deleteSingleDoc('subjs', subjId).catch((error) =>
+      showSyncError('ลบข้อสอบอัตนัย', error),
+    );
+  };
+
+  const clearCourseSubjs = () => {
+    setSubjs([]);
+    void deleteDocsByCourse('subjs', activeCourseId).catch((error) =>
+      showSyncError('ลบข้อสอบอัตนัยทั้งหมด', error),
+    );
+  };
+
+  // --- SUPER ADMIN TEACHER & COURSE HANDLERS ---
+  const handleSaveTeacher = async (teacher: Teacher) => {
+    setTeachers((prev) => {
+      const exists = prev.some((t) => t.id === teacher.id);
+      return exists ? prev.map((t) => (t.id === teacher.id ? teacher : t)) : [...prev, teacher];
+    });
+    try {
+      await saveSingleDoc('teachers', teacher);
+    } catch (error) {
+      showSyncError('บัญชีครูผู้สอน', error);
+    }
+  };
+
+  const handleDeleteTeacher = async (teacherId: string) => {
+    setTeachers((prev) => prev.filter((t) => t.id !== teacherId));
+    await deleteSingleDoc('teachers', teacherId);
+  };
+
+  const handleSaveCourse = async (course: Course) => {
+    setCourses((prev) => {
+      const exists = prev.some((c) => c.id === course.id);
+      return exists ? prev.map((c) => (c.id === course.id ? course : c)) : [...prev, course];
+    });
+    try {
+      await saveSingleDoc('courses', course);
+      // Initialize default settings doc if brand new course
+      if (!allSettingsMap[course.id]) {
+        const initSet = createDefaultSettings(course.id);
+        await saveCourseSettings(course.id, initSet);
+      }
+    } catch (error) {
+      showSyncError('รายวิชา', error);
+    }
+  };
+
+  const handleDeleteCourse = async (courseId: string) => {
+    if (courseId === DEFAULT_COURSE_ID) return;
+    setCourses((prev) => prev.filter((c) => c.id !== courseId));
+    if (activeCourseId === courseId) {
+      setActiveCourseId(DEFAULT_COURSE_ID);
+    }
+    await Promise.all([
+      deleteSingleDoc('courses', courseId),
+      deleteSingleDoc('settings', getSettingsDocId(courseId)),
+      deleteDocsByCourse('mcqs', courseId),
+      deleteDocsByCourse('subjs', courseId),
+      deleteDocsByCourse('submissions', courseId),
+    ]);
+  };
+
+  const handleToggleCourseOpen = async (courseId: string, nextOpen: boolean) => {
+    const existing = allSettingsMap[courseId] || createDefaultSettings(courseId);
+    const updated: Settings = { ...existing, isOpen: nextOpen };
+    setAllSettingsMap((prev) => ({ ...prev, [courseId]: updated }));
+    if (courseId === activeCourseId) {
+      setSettings(updated);
+    }
+    await saveCourseSettings(courseId, updated);
   };
 
   const [isSyncingAll, setIsSyncingAll] = useState(false);
@@ -1105,86 +1238,142 @@ export default function App() {
   const handleSyncAllToCloud = async () => {
     setIsSyncingAll(true);
     try {
-      await replaceSharedCollection('students', students);
-      await replaceSharedCollection('mcqs', mcqs);
-      await replaceSharedCollection('subjs', subjs);
-      await replaceSharedCollection('settings', [settings]);
-      if (submissions.length > 0) {
-        await upsertSharedItems('submissions', submissions);
+      await saveCourseSettings(activeCourseId, settings);
+      if (mcqs.length > 0) {
+        await saveBatchDocs(
+          'mcqs',
+          mcqs.map((m) => ({ ...m, courseId: activeCourseId })),
+        );
       }
-      alert('ซิงค์ข้อมูลและข้อสอบทั้งหมดขึ้นฐานข้อมูลกลาง (Cloud) เรียบร้อยแล้ว!\nทุกเครื่องที่เปิดแอปจะได้รับข้อสอบและข้อมูลชุดนี้ทันที');
+      if (subjs.length > 0) {
+        await saveBatchDocs(
+          'subjs',
+          subjs.map((s) => ({ ...s, courseId: activeCourseId })),
+        );
+      }
+      if (adminRole === 'super_admin' && courses.some((c) => c.id === DEFAULT_COURSE_ID)) {
+        await saveSingleDoc('courses', DEFAULT_COURSE);
+      }
+      alert(`ซิงค์ข้อมูลรายวิชา "${activeCourse.name}" ขึ้นฐานข้อมูลกลาง (Cloud) เรียบร้อยแล้ว!`);
     } catch (error) {
-      showSyncError('ข้อมูลทั้งหมดขึ้นคลาวด์', error);
+      showSyncError('ข้อมูลรายวิชาขึ้นคลาวด์', error);
     } finally {
       setIsSyncingAll(false);
     }
   };
 
-  // ครั้งแรกที่ผู้ดูแลเปิดระบบ จะย้ายข้อสอบชุดใหม่ขึ้นฐานข้อมูลกลางหากบนคลาวด์ยังว่างอยู่
-  useEffect(() => {
-    if (!isAdmin) return;
+  // --- UNIFIED LOGIN (SUPER ADMIN -> TEACHER -> STUDENT HIGH-CONCURRENCY QUERY) ---
+  const handleLogin = async (
+    id: string,
+    pass: string,
+  ): Promise<{
+    success: boolean;
+    isClosed?: boolean;
+    wrongClass?: boolean;
+    studentClass?: string;
+    suggestedCourses?: Course[];
+    message?: string;
+  }> => {
+    const cleanId = id.trim();
+    const cleanPass = pass.trim();
 
-    const migrate = async <T extends { id: string }>(
-      name: SharedCollectionName,
-      data: T[],
-      mode: 'replace' | 'upsert',
-    ) => {
-      if (
-        remoteStatus[name] !== 'empty' ||
-        migrationStarted.current[name] ||
-        data.length === 0
-      ) {
-        return;
-      }
+    if (!cleanId || !cleanPass) {
+      return { success: false, message: 'กรุณากรอกชื่อผู้ใช้และรหัสผ่านให้ครบถ้วน' };
+    }
 
-      migrationStarted.current[name] = true;
-      try {
-        if (mode === 'replace') {
-          await replaceSharedCollection(name, data);
-        } else {
-          await upsertSharedItems(name, data);
-        }
-      } catch (error) {
-        migrationStarted.current[name] = false;
-        showSyncError('ข้อมูลเดิม', error);
-      }
-    };
-
-    void migrate('students', students, 'replace');
-    void migrate('mcqs', mcqs, 'replace');
-    void migrate('subjs', subjs, 'replace');
-    void migrate('submissions', submissions, 'upsert');
-    void migrate('settings', [settings], 'replace');
-  }, [isAdmin, remoteStatus, students, mcqs, subjs, submissions, settings]);
-
-  const handleLogin = (id: string, pass: string): { success: boolean; isClosed?: boolean } => {
-    if (id === 'TD43845' && pass === 'Natdanai43845') {
+    // 1. Super Admin Login
+    if (cleanId === SUPER_ADMIN_USERNAME && cleanPass === 'Natdanai43845') {
       setIsAdmin(true);
+      setAdminRole('super_admin');
+      setCurrentTeacher(null);
       setCurrentView('admin');
       return { success: true };
     }
 
+    // 2. Teacher Login (allowed even when courses are closed)
+    if (cleanId !== cleanPass) {
+      const passHash = await hashPassword(cleanPass);
+      const { teacher, disabled } = await verifyTeacherLogin(cleanId, passHash);
+      if (disabled) {
+        return {
+          success: false,
+          message: 'บัญชีครูผู้สอนนี้ถูกระงับการใช้งานชั่วคราว กรุณาติดต่อผู้ดูแลระบบหลัก (Admin)',
+        };
+      }
+      if (teacher) {
+        setIsAdmin(true);
+        setAdminRole('teacher');
+        setCurrentTeacher(teacher);
+        // Select teacher's first assigned course if available
+        const loadedCourses = courses.length > 0 ? courses : await fetchCoursesOnce();
+        const myCourse = loadedCourses.find((c) => c.teacherId === teacher.id);
+        if (myCourse) {
+          setActiveCourseId(myCourse.id);
+        }
+        setCurrentView('admin');
+        return { success: true };
+      }
+    }
+
+    // 3. Student Login (ID == PASS) — High-concurrency 1-doc query!
     if (!settings.isOpen) {
       return { success: false, isClosed: true };
     }
-    
-    // Student login (ID == PASS)
-    if (id === pass) {
-      const student = students.find(s => s.id === id);
+
+    if (cleanId === cleanPass) {
+      // Query ONLY this 1 student from Firestore (fallback to local list if offline)
+      let student = await findStudentById(cleanId);
+      if (!student) {
+        student = students.find((s) => s.id === cleanId) || null;
+      }
+
       if (student) {
+        // Verify student's classroom is allowed in this course (prevents entering another teacher's room!)
+        if (!courseMatchesStudentClass(activeCourse, student.class)) {
+          const suggested = courses.filter((c) => {
+            if (c.id === activeCourse.id) return false;
+            const cOpen = allSettingsMap[c.id] ? allSettingsMap[c.id].isOpen : true;
+            return cOpen && courseMatchesStudentClass(c, student!.class);
+          });
+
+          return {
+            success: false,
+            wrongClass: true,
+            studentClass: student.class,
+            suggestedCourses: suggested,
+            message: `คุณอยู่ชั้น ม.${student.class} แต่รายวิชา "${activeCourse.name}" (${formatCourseClasses(activeCourse.targetClasses)}${activeCourse.teacherName ? ` • ${activeCourse.teacherName}` : ''}) ไม่ได้เปิดรับห้องของคุณ กรุณาเลือกรายวิชาที่ตรงกับห้องเรียนและครูผู้สอนของคุณ`,
+          };
+        }
+
+        // Fetch ONLY this course's questions ONCE + ONLY this student's submission for this course
+        const [questionBundle, existingSub] = await Promise.all([
+          fetchCourseQuestionsOnce(activeCourseId),
+          fetchStudentSubmissionForCourse(student.id, activeCourseId),
+        ]);
+
+        setMcqs(questionBundle.mcqs);
+        setSubjs(questionBundle.subjs);
+        setStudentExistingSubmission(existingSub);
         setCurrentUser(student);
         setIsAdmin(false);
+        setAdminRole(null);
+        setCurrentTeacher(null);
         setCurrentView('student-info');
         return { success: true };
       }
     }
-    return { success: false };
+
+    return { success: false, message: 'รหัสนักเรียน ชื่อผู้ใช้ครู หรือรหัสผ่านไม่ถูกต้อง' };
   };
 
   const handleLogout = () => {
     setCurrentSubmission(null);
+    setStudentExistingSubmission(null);
+    setActiveExamQuestions(null);
     setCurrentUser(null);
     setIsAdmin(false);
+    setAdminRole(null);
+    setCurrentTeacher(null);
     setCurrentView('login');
   };
 
@@ -1194,18 +1383,29 @@ export default function App() {
         {!isAdmin && !settings.isOpen && (
           <div className="bg-gradient-to-r from-red-600 via-rose-600 to-red-700 text-white text-xs sm:text-sm font-bold py-2.5 px-4 text-center flex items-center justify-center gap-2 shadow-sm sticky top-0 z-50">
             <Lock size={16} className="shrink-0 animate-pulse" />
-            <span>⛔ สถานะระบบสอบ: ระบบปิดอยู่ (คุณครูผู้คุมสอบยังไม่เปิดระบบให้นักเรียนเข้าทำข้อสอบ)</span>
+            <span>
+              ⛔ สถานะรายวิชา "{activeCourse.name}": ระบบปิดอยู่ (คุณครูผู้คุมสอบยังไม่เปิดระบบให้นักเรียนเข้าทำข้อสอบ)
+            </span>
           </div>
         )}
       {currentView === 'instructions' && (
         <InstructionView 
           isOpen={settings.isOpen} 
+          activeCourse={activeCourse}
           onNext={() => setCurrentView('login')} 
         />
       )}
       {currentView === 'login' && (
         <LoginView 
           isOpen={settings.isOpen} 
+          courses={courses}
+          allSettingsMap={allSettingsMap}
+          activeCourseId={activeCourseId}
+          urlLockedCourseCode={urlLockedCourseCode}
+          onSelectCourse={(cid) => {
+            setActiveCourseId(cid);
+            setUrlLockedCourseCode(null);
+          }}
           onLogin={handleLogin} 
         />
       )}
@@ -1218,12 +1418,13 @@ export default function App() {
         return (
           <StudentInfoView 
             student={currentUser} 
+            course={activeCourse}
             settings={settings}
             mcqCount={mcqCountToTake}
             subjCount={subjCountToTake}
             totalPoolMcqCount={eligibleMcqs.length}
             totalPoolSubjCount={eligibleSubjs.length}
-            existingSubmission={submissions.find(s => s.studentId === currentUser.id && !s.isArchived)}
+            existingSubmission={studentExistingSubmission}
             onViewResult={(sub) => {
               setCurrentSubmission(sub);
               setCurrentView('result');
@@ -1256,12 +1457,12 @@ export default function App() {
         return (
           <ExamView 
             student={currentUser}
+            course={activeCourse}
             isOpen={settings.isOpen}
             mcqs={examMcqs}
             subjs={examSubjs}
             settings={settings}
             onFinish={async (sub) => {
-              // ใช้ผลสอบครั้งนี้แสดงในหน้าสรุปทันที ไม่ค้นจากประวัติผลสอบทั้งหมด
               setCurrentSubmission(sub);
               const res = await addSubmission(sub);
               setCurrentView('result');
@@ -1281,16 +1482,37 @@ export default function App() {
           onRetrySync={handleRetrySubmissionSync}
         />
       )}
-      {currentView === 'admin' && isAdmin && (
+      {currentView === 'admin' && isAdmin && adminRole && (
         <AdminView 
+          adminRole={adminRole}
+          currentTeacher={currentTeacher}
+          courses={courses}
+          teachers={teachers}
+          allSettingsMap={allSettingsMap}
+          activeCourseId={activeCourseId}
+          activeCourse={activeCourse}
+          onSelectCourse={setActiveCourseId}
+          onSaveTeacher={handleSaveTeacher}
+          onDeleteTeacher={handleDeleteTeacher}
+          onSaveCourse={handleSaveCourse}
+          onDeleteCourse={handleDeleteCourse}
+          onToggleCourseOpen={handleToggleCourseOpen}
           students={students}
-          setStudents={saveStudents}
+          setStudents={saveStudentsBulk}
+          onSaveSingleStudent={saveSingleStudent}
+          onDeleteSingleStudent={deleteSingleStudent}
           mcqs={mcqs}
-          setMcqs={saveMcqs}
-          submissions={submissions}
-          setSubmissions={saveSubmissions}
+          onSaveMcqItem={saveMcqItem}
+          onSaveMcqsBatch={saveMcqsBatch}
+          onDeleteMcqItem={deleteMcqItem}
+          onClearCourseMcqs={clearCourseMcqs}
           subjs={subjs}
-          setSubjs={saveSubjs}
+          onSaveSubjItem={saveSubjItem}
+          onSaveSubjsBatch={saveSubjsBatch}
+          onDeleteSubjItem={deleteSubjItem}
+          onClearCourseSubjs={clearCourseSubjs}
+          submissions={submissions}
+          onSaveGradedSubmission={handleSaveGradedSubmission}
           onLogout={handleLogout}
           databaseStatus={remoteStatus}
           settings={settings}
@@ -1311,7 +1533,7 @@ export default function App() {
 }
 
 // --- INSTRUCTION VIEW ---
-function InstructionView({ isOpen = true, onNext }: { isOpen?: boolean; onNext: () => void }) {
+function InstructionView({ isOpen = true, activeCourse, onNext }: { isOpen?: boolean; activeCourse?: Course; onNext: () => void }) {
   const [isAgreed, setIsAgreed] = useState(false);
 
   return (
@@ -1327,7 +1549,24 @@ function InstructionView({ isOpen = true, onNext }: { isOpen?: boolean; onNext: 
             />
           </div>
           <h1 className="text-3xl font-bold text-white mb-2 drop-shadow-md">โรงเรียนบ้านม่วงพิทยาคม</h1>
-          <h2 className="text-xl text-blue-100">คำชี้แจงในการสอบวัดผล</h2>
+          <h2 className="text-xl text-blue-100">ระบบสอบวัดผลออนไลน์กลาง</h2>
+          {activeCourse && (
+            <div className="mt-3 flex flex-col items-center gap-1.5">
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/15 border border-white/25 text-white text-sm font-bold backdrop-blur-xs">
+                <BookOpen size={15} />
+                <span>{activeCourse.name} ({activeCourse.code})</span>
+              </div>
+              <div className="text-xs text-blue-100/95 font-medium flex flex-wrap items-center justify-center gap-2">
+                <span>🏫 {formatCourseClasses(activeCourse.targetClasses)}</span>
+                {activeCourse.teacherName && (
+                  <>
+                    <span>•</span>
+                    <span>👨‍🏫 {activeCourse.teacherName}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* System Closed Notice Banner */}
@@ -1408,36 +1647,65 @@ function InstructionView({ isOpen = true, onNext }: { isOpen?: boolean; onNext: 
 // --- LOGIN VIEW ---
 function LoginView({ 
   isOpen = true,
+  courses = [],
+  allSettingsMap = {},
+  activeCourseId,
+  urlLockedCourseCode,
+  onSelectCourse,
   onLogin 
 }: { 
   isOpen?: boolean;
-  onLogin: (id: string, p: string) => { success: boolean; isClosed?: boolean } | boolean;
+  courses?: Course[];
+  allSettingsMap?: Record<string, Settings>;
+  activeCourseId: string;
+  urlLockedCourseCode?: string | null;
+  onSelectCourse: (courseId: string) => void;
+  onLogin: (
+    id: string,
+    p: string,
+  ) => Promise<{
+    success: boolean;
+    isClosed?: boolean;
+    wrongClass?: boolean;
+    studentClass?: string;
+    suggestedCourses?: Course[];
+    message?: string;
+  }>;
 }) {
   const [id, setId] = useState('');
   const [pass, setPass] = useState('');
   const [error, setError] = useState('');
+  const [suggestedCourses, setSuggestedCourses] = useState<Course[]>([]);
+  const [wrongStudentClass, setWrongStudentClass] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const submit = (e: React.FormEvent) => {
+  const selectedCourse = courses.find((c) => c.id === activeCourseId) || courses[0] || DEFAULT_COURSE;
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) return;
     setError('');
+    setSuggestedCourses([]);
+    setWrongStudentClass('');
+    setIsLoading(true);
 
-    // If student attempts to log in while closed
-    if (!isOpen && id.trim() !== 'TD43845') {
-      setError('⛔ ขณะนี้ระบบสอบปิดให้บริการอยู่ ไม่สามารถเข้าสอบได้ กรุณารอคุณครูผู้คุมสอบเปิดระบบ');
-      return;
-    }
-
-    const res = onLogin(id, pass);
-    if (typeof res === 'object') {
+    try {
+      const res = await onLogin(id, pass);
       if (!res.success) {
         if (res.isClosed) {
-          setError('⛔ ขณะนี้ระบบสอบปิดให้บริการอยู่ ไม่สามารถเข้าสอบได้ กรุณารอคุณครูผู้คุมสอบเปิดระบบ');
+          setError(`⛔ ขณะนี้รายวิชา "${selectedCourse.name}" ปิดระบบสอบอยู่ กรุณารอคุณครูผู้คุมสอบเปิดระบบ`);
         } else {
-          setError('รหัสนักเรียนหรือรหัสผ่านไม่ถูกต้อง');
+          setError(res.message || 'รหัสนักเรียน ชื่อผู้ใช้ครู หรือรหัสผ่านไม่ถูกต้อง');
+          if (res.wrongClass && res.suggestedCourses) {
+            setSuggestedCourses(res.suggestedCourses);
+            setWrongStudentClass(res.studentClass || '');
+          }
         }
       }
-    } else if (!res) {
-      setError(!isOpen ? '⛔ ขณะนี้ระบบสอบปิดให้บริการอยู่ ไม่สามารถเข้าสอบได้ กรุณารอคุณครูผู้คุมสอบเปิดระบบ' : 'รหัสนักเรียนหรือรหัสผ่านไม่ถูกต้อง');
+    } catch (err: any) {
+      setError('เกิดข้อผิดพลาดในการเชื่อมต่อระบบ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -1452,11 +1720,71 @@ function LoginView({
               className="w-full h-full object-contain" 
             />
           </div>
-          <h1 className="text-2xl font-bold text-white mb-2 drop-shadow-md">ระบบสอบวิชาสังคมศึกษา</h1>
-          <p className="text-blue-100">กรุณาเข้าสู่ระบบด้วยรหัสนักเรียน</p>
+          <h1 className="text-2xl font-bold text-white mb-1 drop-shadow-md">ระบบสอบออนไลน์กลาง</h1>
+          <p className="text-blue-100 text-sm">โรงเรียนบ้านม่วงพิทยาคม</p>
         </div>
 
         <div className="p-8 space-y-5">
+          {/* Course / Subject Selector for Students */}
+          <div className="p-3.5 rounded-2xl bg-blue-50/70 border border-blue-200 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-blue-900 flex items-center gap-1.5">
+                <BookOpen size={14} className="text-blue-600" />
+                รายวิชาที่ต้องการเข้าสอบ:
+              </label>
+              {urlLockedCourseCode && (
+                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                  จากลิงก์รายวิชา
+                </span>
+              )}
+            </div>
+            {courses.length > 1 ? (
+              <select
+                value={activeCourseId}
+                onChange={(e) => {
+                  onSelectCourse(e.target.value);
+                  setError('');
+                  setSuggestedCourses([]);
+                }}
+                className="w-full border border-blue-300 bg-white px-3 py-2.5 rounded-xl font-bold text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
+              >
+                {courses.map((c) => {
+                  const openFlag = allSettingsMap[c.id] ? allSettingsMap[c.id].isOpen : true;
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {formatCourseDropdownLabel(c, openFlag)}
+                    </option>
+                  );
+                })}
+              </select>
+            ) : (
+              <div className="bg-white border border-blue-200 px-3 py-2 rounded-xl font-bold text-sm text-slate-800 flex items-center justify-between">
+                <span>{selectedCourse.name} ({selectedCourse.code})</span>
+                <span className={`text-xs font-bold ${isOpen ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {isOpen ? '🟢 เปิดสอบ' : '🔴 ปิดสอบ'}
+                </span>
+              </div>
+            )}
+
+            {/* Clear Teacher + Target Classrooms Metadata Strip */}
+            <div className="bg-white/90 border border-blue-100 rounded-xl px-3 py-2 text-xs text-slate-600 space-y-1">
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-slate-500 shrink-0">🏫 ห้องเรียนที่สอบ:</span>
+                <span className="font-bold text-indigo-800 text-right">
+                  {formatCourseClasses(selectedCourse.targetClasses)}
+                </span>
+              </div>
+              {selectedCourse.teacherName && (
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-slate-500 shrink-0">👨‍🏫 ครูผู้สอน:</span>
+                  <span className="font-semibold text-slate-800 text-right">
+                    {selectedCourse.teacherName}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Closed Status Banner */}
           {!isOpen && (
             <div className="bg-amber-50 border-2 border-amber-300 text-amber-950 rounded-2xl p-4 flex items-start gap-3 text-left shadow-xs">
@@ -1464,12 +1792,12 @@ function LoginView({
                 <Lock size={18} />
               </div>
               <div className="text-xs">
-                <div className="font-bold text-amber-900 text-sm">⛔ ขณะนี้ระบบสอบปิดอยู่ (ระบบปิด)</div>
+                <div className="font-bold text-amber-900 text-sm">⛔ รายวิชานี้ปิดรับสอบอยู่</div>
                 <div className="text-amber-800 mt-0.5 leading-relaxed">
-                  ยังไม่เปิดให้นักเรียนเข้าทำข้อสอบ กรุณารอคุณครูผู้คุมสอบเปิดระบบ
+                  ยังไม่เปิดให้นักเรียนเข้าทำข้อสอบ กรุณาเลือกวิชาอื่นที่เปิดอยู่ หรือรอคุณครูเปิดระบบ
                 </div>
                 <div className="text-[11px] text-amber-700/80 mt-1">
-                  * สำหรับคุณครูผู้สอน สามารถกรอกรหัสผู้ดูแลเพื่อเปิดระบบสอบได้ตามปกติ
+                  * สำหรับคุณครูผู้สอนและแอดมิน สามารถล็อกอินเข้าจัดการระบบได้ตามปกติ
                 </div>
               </div>
             </div>
@@ -1477,7 +1805,7 @@ function LoginView({
 
           <form onSubmit={submit} className="space-y-4">
             <div>
-              <label className="block text-sm font-bold text-slate-700 mb-2">รหัสนักเรียน / ชื่อผู้ใช้</label>
+              <label className="block text-sm font-bold text-slate-700 mb-2">รหัสนักเรียน / ชื่อผู้ใช้ครู</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                   <User size={20} />
@@ -1487,7 +1815,7 @@ function LoginView({
                   value={id} 
                   onChange={e => setId(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="กรอกรหัสนักเรียน"
+                  placeholder="กรอกรหัสนักเรียน หรือรหัสครูผู้สอน"
                 />
               </div>
             </div>
@@ -1508,21 +1836,57 @@ function LoginView({
             </div>
             
             {error && (
-              <div className="bg-red-50 text-red-700 p-3.5 rounded-xl text-xs sm:text-sm flex items-start gap-2.5 border border-red-200 leading-relaxed animate-in fade-in duration-150">
-                <AlertCircle size={18} className="shrink-0 text-red-600 mt-0.5"/>
-                <p className="font-medium">{error}</p>
+              <div className="bg-red-50 text-red-700 p-3.5 rounded-xl text-xs sm:text-sm border border-red-200 leading-relaxed animate-in fade-in duration-150 space-y-2.5">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle size={18} className="shrink-0 text-red-600 mt-0.5"/>
+                  <p className="font-medium">{error}</p>
+                </div>
+                {suggestedCourses.length > 0 && (
+                  <div className="pt-2 border-t border-red-200 space-y-1.5">
+                    <div className="text-xs font-bold text-red-900">
+                      👉 รายวิชาที่เปิดสอบสำหรับชั้น ม.{wrongStudentClass} (กดเพื่อสลับทันที):
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {suggestedCourses.map((sc) => (
+                        <button
+                          key={sc.id}
+                          type="button"
+                          onClick={() => {
+                            onSelectCourse(sc.id);
+                            setError('');
+                            setSuggestedCourses([]);
+                          }}
+                          className="w-full text-left px-3 py-2 rounded-lg bg-white hover:bg-blue-50 text-blue-900 border border-blue-300 font-bold text-xs flex items-center justify-between gap-2 shadow-2xs cursor-pointer"
+                        >
+                          <span>
+                            🟢 {sc.name} ({formatCourseClasses(sc.targetClasses)}
+                            {sc.teacherName ? ` • ${sc.teacherName}` : ''})
+                          </span>
+                          <span className="text-blue-600 shrink-0">เลือกวิชานี้ →</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             
             <button 
               type="submit" 
-              className={`w-full py-4 mt-6 rounded-xl font-bold text-lg shadow-md transition-all cursor-pointer ${
+              disabled={isLoading}
+              className={`w-full py-4 mt-6 rounded-xl font-bold text-lg shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 ${
                 !isOpen 
                   ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-amber-200' 
                   : 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-200 hover:shadow-lg'
               }`}
             >
-              {!isOpen ? 'เข้าสู่ระบบ (ระบบสอบปิดอยู่)' : 'เข้าสู่ระบบ'}
+              {isLoading ? (
+                <>
+                  <Loader2 size={20} className="animate-spin" /> กำลังตรวจสอบและเตรียมข้อสอบ...
+                </>
+              ) : (
+                !isOpen ? 'เข้าสู่ระบบ (สำหรับครู / แอดมิน)' : 'เข้าสู่ระบบ'
+              )}
             </button>
           </form>
         </div>
@@ -1534,6 +1898,7 @@ function LoginView({
 // --- STUDENT INFO VIEW ---
 function StudentInfoView({ 
   student, 
+  course,
   settings, 
   mcqCount = 0, 
   subjCount = 0, 
@@ -1545,6 +1910,7 @@ function StudentInfoView({
   onLogout 
 }: { 
   student: Student; 
+  course?: Course;
   settings?: Settings; 
   mcqCount?: number; 
   subjCount?: number; 
@@ -1557,7 +1923,11 @@ function StudentInfoView({
 }) {
   const cleanClass = (student.class || '6/3').trim().replace(/^ม\.?\s*/, '');
   const [selectedClass, setSelectedClass] = useState(cleanClass || '6/3');
-  const availableClasses = Array.from(new Set(['6/3', '6/8', cleanClass].filter(Boolean)));
+  const availableClasses = sortClassNames(
+    course?.targetClasses && course.targetClasses.length > 0
+      ? [...course.targetClasses, cleanClass]
+      : ['6/3', '6/8', cleanClass],
+  );
 
   const formatText = settings?.examFormat === 'mcq_only' 
     ? 'เฉพาะข้อสอบปรนัย (ช้อยส์ ก ข ค ง จ)' 
@@ -1583,7 +1953,15 @@ function StudentInfoView({
                 className="w-full h-full object-contain" 
               />
             </div>
-            <h2 className="text-xl font-bold drop-shadow-sm">ข้อมูลผู้เข้าสอบ</h2>
+            <div>
+              <h2 className="text-xl font-bold drop-shadow-sm">ข้อมูลผู้เข้าสอบ</h2>
+              {course && (
+                <div className="text-xs text-blue-100 font-medium mt-0.5">
+                  รายวิชา: {course.name} ({course.code}) • {formatCourseClasses(course.targetClasses)}
+                  {course.teacherName ? ` • ${course.teacherName}` : ''}
+                </div>
+              )}
+            </div>
           </div>
           <button onClick={onLogout} className="text-blue-100 hover:text-white p-2 flex items-center gap-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors cursor-pointer">
             <LogOut size={18} /> ออกจากระบบ
@@ -1768,6 +2146,7 @@ function StudentInfoView({
 // --- EXAM VIEW ---
 function ExamView({ 
   student, 
+  course,
   isOpen = true,
   mcqs, 
   subjs, 
@@ -1775,6 +2154,7 @@ function ExamView({
   onFinish 
 }: { 
   student: Student; 
+  course?: Course;
   isOpen?: boolean;
   mcqs: MCQ[]; 
   subjs: Subjective[]; 
@@ -1817,10 +2197,13 @@ function ExamView({
 
     const now = Date.now();
     const randSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const confCode = `CONF-${(student.class || 'ALL').replace('/', '')}-${student.id}-${now.toString(36).slice(-4).toUpperCase()}`;
+    const coursePrefix = (course?.code || 'EXAM').replace(/[^A-Z0-9]/gi, '').slice(0, 8).toUpperCase();
+    const confCode = `CONF-${coursePrefix}-${student.id}-${now.toString(36).slice(-4).toUpperCase()}`;
 
     const sub: Submission = {
-      id: `sub_${student.id}_${now}_${randSuffix}`,
+      id: `sub_${course?.id || DEFAULT_COURSE_ID}_${student.id}_${now}_${randSuffix}`,
+      courseId: course?.id || DEFAULT_COURSE_ID,
+      courseName: course?.name || DEFAULT_COURSE.name,
       confirmationCode: confCode,
       studentId: student.id,
       studentName: student.name,
@@ -2380,6 +2763,11 @@ function ResultView({
             <CheckCircle2 size={56} className="drop-shadow-sm" />
           </div>
           <h2 className="text-3xl font-bold mb-2 drop-shadow-md">ส่งข้อสอบสำเร็จแล้ว 100%</h2>
+          {submission.courseName && (
+            <div className="inline-block bg-white/15 border border-white/25 text-white px-4 py-1 rounded-full text-sm font-bold mb-2">
+              รายวิชา: {submission.courseName}
+            </div>
+          )}
           <p className="text-emerald-100 text-lg font-medium">ระบบได้บันทึกคำตอบและออกหลักฐานการส่งสอบให้เรียบร้อยแล้ว</p>
         </div>
 
@@ -2547,14 +2935,35 @@ function ResultView({
 }
 
 function AdminView({ 
+  adminRole,
+  currentTeacher,
+  courses,
+  teachers,
+  allSettingsMap,
+  activeCourseId,
+  activeCourse,
+  onSelectCourse,
+  onSaveTeacher,
+  onDeleteTeacher,
+  onSaveCourse,
+  onDeleteCourse,
+  onToggleCourseOpen,
   students, 
   setStudents, 
+  onSaveSingleStudent,
+  onDeleteSingleStudent,
   mcqs, 
-  setMcqs, 
-  submissions, 
-  setSubmissions, 
+  onSaveMcqItem,
+  onSaveMcqsBatch,
+  onDeleteMcqItem,
+  onClearCourseMcqs,
   subjs, 
-  setSubjs, 
+  onSaveSubjItem,
+  onSaveSubjsBatch,
+  onDeleteSubjItem,
+  onClearCourseSubjs,
+  submissions, 
+  onSaveGradedSubmission,
   onLogout, 
   databaseStatus, 
   settings, 
@@ -2568,7 +2977,19 @@ function AdminView({
   onBulkArchiveSubmissions,
   onDownloadArchiveJSON
 }: any) {
-  const [tab, setTab] = useState<'students' | 'mcqs' | 'subjs' | 'grading' | 'settings'>('settings');
+  const isSuperAdmin = adminRole === 'super_admin';
+  const visibleCourses: Course[] = isSuperAdmin
+    ? courses
+    : (courses as Course[]).filter((c) => c.teacherId === currentTeacher?.id);
+  const hasAssignedCourse = visibleCourses.length > 0;
+  const allRosterClasses = sortClassNames((students as Student[]).map((s) => s.class));
+
+  const [tab, setTab] = useState<'courses' | 'teachers' | 'students' | 'mcqs' | 'subjs' | 'grading' | 'settings'>(
+    isSuperAdmin ? 'courses' : 'settings',
+  );
+  const [copiedCourseLink, setCopiedCourseLink] = useState(false);
+  const [savingTargetClasses, setSavingTargetClasses] = useState(false);
+  const [savedClassesToast, setSavedClassesToast] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
 
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -2784,7 +3205,7 @@ function AdminView({
       return;
     }
 
-    setStudents([...students, createdStudent]);
+    onSaveSingleStudent(createdStudent);
     setIsAddingStudent(false);
     setNewStudent({ id: '', prefix: '', firstName: '', lastName: '', class: '', number: '' });
     alert('เพิ่มนักเรียนลงฐานข้อมูลกลางสำเร็จ');
@@ -2792,30 +3213,35 @@ function AdminView({
 
   const handleBulkChangeExamType = (type: 'mcqs'|'subjs', examType: 'midterm'|'final'|'general') => {
     if (type === 'mcqs') {
-      const updated = mcqs.map((m: MCQ) => selectedMcqs.has(m.id) ? { ...m, examType } : m);
-      setMcqs(updated);
+      const changed = mcqs
+        .filter((m: MCQ) => selectedMcqs.has(m.id))
+        .map((m: MCQ) => ({ ...m, examType }));
+      onSaveMcqsBatch(changed);
       setSelectedMcqs(new Set());
     } else {
-      const updated = subjs.map((s: Subjective) => selectedSubjs.has(s.id) ? { ...s, examType } : s);
-      setSubjs(updated);
+      const changed = subjs
+        .filter((s: Subjective) => selectedSubjs.has(s.id))
+        .map((s: Subjective) => ({ ...s, examType }));
+      onSaveSubjsBatch(changed);
       setSelectedSubjs(new Set());
     }
   };
 
   const handleExportCSV = () => {
-    const headers = ["วันที่ส่ง", "รหัสยืนยันการส่ง", "รหัสนักเรียน", "ชื่อ-สกุล", "ชั้น", "เลขที่", "คะแนนปรนัย", "จำนวนข้อปรนัย", "คะแนนอัตนัย", "จำนวนข้ออัตนัย", "คะแนนรวม", "เวลาที่ใช้ (นาที)", "แจ้งเตือนทุจริต", "สถานะการจัดเก็บ"];
+    const headers = ["รายวิชา", "วันที่ส่ง", "รหัสยืนยันการส่ง", "รหัสนักเรียน", "ชื่อ-สกุล", "ชั้น", "เลขที่", "คะแนนปรนัย", "จำนวนข้อปรนัย", "คะแนนอัตนัย", "จำนวนข้ออัตนัย", "คะแนนรวม", "เวลาที่ใช้ (นาที)", "แจ้งเตือนทุจริต", "สถานะการจัดเก็บ"];
     const rows = submissions.map((s: Submission) => {
        const student = students.find((st: Student) => st.id === s.studentId);
        const subjTotal = Object.values(s.subjScores || {}).reduce((a: number, b: number) => a + b, 0);
        const mcqTotal = s.totalMcqCount || (s.assignedMcqIds ? s.assignedMcqIds.length : Object.keys(s.mcqAnswers || {}).length);
        const subjQuestionsTotal = s.totalSubjCount || (s.assignedSubjIds ? s.assignedSubjIds.length : Object.keys(s.subjAnswers || {}).length);
        return [
+         `"${activeCourse?.name || '-'}"`,
          `"${new Date(s.submittedAt).toLocaleString('th-TH')}"`,
          `"${s.confirmationCode || '-'}"`,
          `"${s.studentId}"`,
-         `"${student?.name || 'Unknown'}"`,
-         `"${student?.class || '-'}"`,
-         `"${student?.number || '-'}"`,
+         `"${student?.name || s.studentName || 'Unknown'}"`,
+         `"${student?.class || s.studentClass || '-'}"`,
+         `"${student?.number || s.studentNumber || '-'}"`,
          s.mcqScore,
          mcqTotal,
          subjTotal,
@@ -2831,7 +3257,7 @@ function AdminView({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', 'exam_results.csv');
+    link.setAttribute('download', `exam_results_${activeCourse?.code || 'course'}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2839,17 +3265,13 @@ function AdminView({
 
   const handleSaveMcq = () => {
     if (!editingMcq) return;
-    const updated = mcqs.map((m: MCQ) => m.id === editingMcq.id ? editingMcq : m);
-    setMcqs(updated);
+    onSaveMcqItem(editingMcq);
     setEditingMcq(null);
   };
 
   const handleSaveGrading = () => {
     if (!gradingSub) return;
-    const updated = submissions.map((s: Submission) => 
-      s.id === gradingSub.id ? { ...s, subjScores: tempScores } : s
-    );
-    setSubmissions(updated);
+    onSaveGradedSubmission({ ...gradingSub, subjScores: tempScores });
     setGradingSub(null);
   };
 
@@ -2906,8 +3328,8 @@ function AdminView({
       if (currentMcq) parsedMcqs.push(currentMcq);
       
       if (parsedMcqs.length > 0) {
-        setMcqs([...mcqs, ...parsedMcqs]);
-        alert(`นำเข้าข้อสอบสำเร็จ ${parsedMcqs.length} ข้อ`);
+        onSaveMcqsBatch(parsedMcqs);
+        alert(`นำเข้าข้อสอบสำเร็จ ${parsedMcqs.length} ข้อ เข้าสู่รายวิชา ${activeCourse?.name || ''}`);
         setIsImportingMcqText(false);
         setMcqImportText('');
       } else {
@@ -2986,8 +3408,8 @@ function AdminView({
         if (currentMcq) parsedMcqs.push(currentMcq);
         
         if (parsedMcqs.length > 0) {
-          setMcqs([...mcqs, ...parsedMcqs]);
-          alert(`นำเข้าข้อสอบสำเร็จ ${parsedMcqs.length} ข้อ`);
+          onSaveMcqsBatch(parsedMcqs);
+          alert(`นำเข้าข้อสอบสำเร็จ ${parsedMcqs.length} ข้อ เข้าสู่รายวิชา ${activeCourse?.name || ''}`);
         } else {
           alert('ไม่พบข้อสอบที่สามารถนำเข้าได้\n\nคำแนะนำ:\n1. หากใช้ระบบ "พิมพ์เลขข้ออัตโนมัติ" ใน Word ระบบจะไม่สามารถอ่านเลขข้อได้ (ให้พิมพ์ 1. แล้วเว้นวรรคเอง)\n2. รูปแบบต้องมีเลขข้อ (เช่น 1.), ตัวเลือก (เช่น ก., ข.), และเฉลย (เช่น Answer: ก)');
         }
@@ -3000,61 +3422,322 @@ function AdminView({
     e.target.value = ''; // reset
   };
 
+  const handleCopyActiveCourseLink = () => {
+    if (!activeCourse) return;
+    const url = `${window.location.origin}${window.location.pathname}?course=${encodeURIComponent(activeCourse.code)}`;
+    try {
+      navigator.clipboard.writeText(url);
+      setCopiedCourseLink(true);
+      setTimeout(() => setCopiedCourseLink(false), 2200);
+    } catch {
+      alert(`ลิงก์เข้าสอบวิชา ${activeCourse.name}:\n${url}`);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex font-sans">
       {/* Sidebar */}
-      <div className="w-64 bg-white border-r border-blue-200 p-6 flex flex-col">
-        <h2 className="text-xl font-bold text-blue-900 mb-8">ระบบจัดการสอบ</h2>
-        <div className="space-y-2 flex-1">
-          <button onClick={() => setTab('settings')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'settings' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>ตั้งค่าระบบ</button>
-          <button onClick={() => setTab('students')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'students' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>จัดการนักเรียน</button>
-          <button onClick={() => setTab('mcqs')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between gap-2 ${tab === 'mcqs' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>
+      <div className="w-72 bg-white border-r border-blue-200 p-5 flex flex-col shrink-0 h-screen sticky top-0 overflow-y-auto">
+        <div className="mb-5 pb-4 border-b border-slate-200">
+          <h2 className="text-lg font-bold text-blue-900">ระบบจัดการสอบกลาง</h2>
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            {isSuperAdmin ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full font-bold bg-blue-600 text-white">
+                <ShieldCheck size={13} /> แอดมินหลัก ({SUPER_ADMIN_USERNAME})
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full font-bold bg-emerald-100 text-emerald-900 border border-emerald-200">
+                <User size={13} /> {currentTeacher?.name || 'ครูผู้สอน'}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Super Admin Central Management Menu */}
+        {isSuperAdmin && (
+          <div className="mb-5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 mb-2">
+              จัดการระบบกลาง (แอดมินหลัก)
+            </div>
+            <div className="space-y-1">
+              <button
+                onClick={() => setTab('courses')}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2 text-sm cursor-pointer ${
+                  tab === 'courses' ? 'bg-blue-600 text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-100 font-medium'
+                }`}
+              >
+                <span className="flex items-center gap-2"><BookOpen size={16} /> จัดการรายวิชา</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${tab === 'courses' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                  {courses.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setTab('teachers')}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2 text-sm cursor-pointer ${
+                  tab === 'teachers' ? 'bg-blue-600 text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-100 font-medium'
+                }`}
+              >
+                <span className="flex items-center gap-2"><Users size={16} /> จัดการครูผู้สอน</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${tab === 'teachers' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                  {teachers.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setTab('students')}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2 text-sm cursor-pointer ${
+                  tab === 'students' ? 'bg-blue-600 text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-100 font-medium'
+                }`}
+              >
+                <span className="flex items-center gap-2"><User size={16} /> รายชื่อนักเรียนกลาง</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${tab === 'students' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                  {students.length}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Active Course Switcher */}
+        <div className="mb-4 p-3 rounded-xl bg-blue-50/70 border border-blue-200">
+          <label className="block text-[11px] font-bold uppercase tracking-wider text-blue-800 mb-1.5">
+            รายวิชาที่กำลังจัดการ:
+          </label>
+          {hasAssignedCourse ? (
+            <>
+              <select
+                value={activeCourseId}
+                onChange={(e) => {
+                  onSelectCourse(e.target.value);
+                  if (tab === 'courses' || tab === 'teachers') setTab('settings');
+                }}
+                className="w-full border border-blue-300 bg-white px-2.5 py-2 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
+              >
+                {visibleCourses.map((c: Course) => {
+                  const openFlag = allSettingsMap[c.id] ? allSettingsMap[c.id].isOpen : true;
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {formatCourseDropdownLabel(c, openFlag)}
+                    </option>
+                  );
+                })}
+              </select>
+              {activeCourse && (
+                <div className="mt-1.5 text-[11px] text-indigo-800 bg-indigo-50/90 border border-indigo-200 px-2.5 py-1 rounded-lg font-bold truncate" title={formatCourseClasses(activeCourse.targetClasses)}>
+                  🏫 {formatCourseClasses(activeCourse.targetClasses)}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={handleCopyActiveCourseLink}
+                className="mt-2 w-full py-1.5 px-2.5 rounded-lg bg-white hover:bg-blue-100 text-blue-800 border border-blue-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                {copiedCourseLink ? <Check size={13} className="text-emerald-600" /> : <Link2 size={13} />}
+                {copiedCourseLink ? 'คัดลอกลิงก์สอบแล้ว!' : 'คัดลอกลิงก์สอบวิชานี้'}
+              </button>
+            </>
+          ) : (
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded-lg">
+              ยังไม่มีรายวิชาที่ได้รับมอบหมาย
+            </div>
+          )}
+        </div>
+
+        {/* Course-Scoped Menu */}
+        <div className="space-y-1 flex-1">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 mb-2">
+            เมนูรายวิชา ({activeCourse?.code || '-'})
+          </div>
+          <button
+            onClick={() => setTab('settings')}
+            disabled={!hasAssignedCourse}
+            className={`w-full text-left px-3.5 py-2.5 rounded-xl text-sm cursor-pointer disabled:opacity-40 ${tab === 'settings' ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200' : 'text-slate-600 hover:bg-slate-50 font-medium'}`}
+          >
+            ตั้งค่ารายวิชา
+          </button>
+          <button
+            onClick={() => setTab('mcqs')}
+            disabled={!hasAssignedCourse}
+            className={`w-full text-left px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2 text-sm cursor-pointer disabled:opacity-40 ${tab === 'mcqs' ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200' : 'text-slate-600 hover:bg-slate-50 font-medium'}`}
+          >
             <span>คลังข้อสอบ (ปรนัย)</span>
             <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${settings.useSelectedMcqs ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-slate-100 text-slate-600'}`}>
               {settings.useSelectedMcqs ? `${activeExamMcqIds.length}/${mcqs.length}` : mcqs.length}
             </span>
           </button>
-          <button onClick={() => setTab('subjs')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between gap-2 ${tab === 'subjs' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>
+          <button
+            onClick={() => setTab('subjs')}
+            disabled={!hasAssignedCourse}
+            className={`w-full text-left px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2 text-sm cursor-pointer disabled:opacity-40 ${tab === 'subjs' ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200' : 'text-slate-600 hover:bg-slate-50 font-medium'}`}
+          >
             <span>คลังข้อสอบ (อัตนัย)</span>
             <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${settings.useSelectedSubjs ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-slate-100 text-slate-600'}`}>
               {settings.useSelectedSubjs ? `${activeExamSubjIds.length}/${subjs.length}` : subjs.length}
             </span>
           </button>
-          <button onClick={() => setTab('grading')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'grading' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>ตรวจผลสอบ</button>
+          <button
+            onClick={() => setTab('grading')}
+            disabled={!hasAssignedCourse}
+            className={`w-full text-left px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2 text-sm cursor-pointer disabled:opacity-40 ${tab === 'grading' ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200' : 'text-slate-600 hover:bg-slate-50 font-medium'}`}
+          >
+            <span>ตรวจผลสอบ</span>
+            <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-600">
+              {submissions.filter((s: Submission) => !s.isArchived).length}
+            </span>
+          </button>
+          {!isSuperAdmin && (
+            <button
+              onClick={() => setTab('students')}
+              className={`w-full text-left px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2 text-sm cursor-pointer ${tab === 'students' ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200' : 'text-slate-600 hover:bg-slate-50 font-medium'}`}
+            >
+              <span>รายชื่อนักเรียน</span>
+              <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-600">
+                {students.length}
+              </span>
+            </button>
+          )}
         </div>
-        <button onClick={onLogout} className="mt-auto flex items-center gap-2 text-red-600 px-4 py-2 hover:bg-red-50 rounded-lg">
-          <LogOut size={20} /> ออกจากระบบ
+
+        <button onClick={onLogout} className="mt-4 flex items-center gap-2 text-red-600 px-3.5 py-2.5 hover:bg-red-50 rounded-xl font-bold text-sm cursor-pointer">
+          <LogOut size={18} /> ออกจากระบบ
         </button>
       </div>
 
       {/* Main Area */}
-      <div className="flex-1 p-8 overflow-y-auto h-screen">
+      <div className="flex-1 p-6 sm:p-8 overflow-y-auto h-screen">
         {Object.values(databaseStatus || {}).some((status) => status === 'error') && (
-          <div className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">
+          <div className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700 text-sm">
             ฐานข้อมูลกลางยังเชื่อมต่อไม่สำเร็จ กรุณาตรวจสอบ Firebase Project และ Firestore Rules ก่อนใช้สอบจริง
           </div>
         )}
         {Object.values(databaseStatus || {}).every((status) => status === 'ready' || status === 'empty') && (
-          <div className="mb-5 rounded-xl border border-green-200 bg-green-50 p-4 text-green-700">
-            เชื่อมต่อฐานข้อมูลกลางแล้ว การแก้ข้อสอบและผลสอบจะอัปเดตทุกเครื่อง
+          <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-800 text-xs sm:text-sm flex flex-wrap items-center justify-between gap-2">
+            <span>
+              ✅ เชื่อมต่อฐานข้อมูลกลางเรียบร้อย (โหมดรองรับนักเรียนหลายร้อยคนพร้อมกัน — แยกข้อมูลรายวิชาอิสระ)
+            </span>
+            {hasAssignedCourse && tab !== 'courses' && tab !== 'teachers' && tab !== 'students' && (
+              <span className="font-bold text-blue-900 bg-white px-3 py-1 rounded-lg border border-emerald-200">
+                วิชาปัจจุบัน: {activeCourse?.name} ({activeCourse?.code}) • {formatCourseClasses(activeCourse?.targetClasses)}
+              </span>
+            )}
           </div>
         )}
-        {tab === 'settings' && (
+
+        {!isSuperAdmin && !hasAssignedCourse && tab !== 'students' && (
+          <div className="bg-white rounded-2xl border-2 border-amber-200 p-10 text-center max-w-xl mx-auto mt-10 shadow-sm">
+            <AlertCircle size={44} className="mx-auto text-amber-500 mb-3" />
+            <h3 className="text-xl font-bold text-slate-800 mb-2">ยังไม่มีรายวิชาที่ได้รับมอบหมาย</h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              บัญชีครูของคุณ ({currentTeacher?.name}) พร้อมใช้งานแล้ว แต่ยังไม่ได้ผูกกับรายวิชาใดๆ
+              <br />
+              กรุณาแจ้งผู้ดูแลระบบหลัก (Admin) ให้สร้างรายวิชาและมอบหมายให้ท่านในเมนู "จัดการรายวิชา"
+            </p>
+          </div>
+        )}
+
+        {isSuperAdmin && tab === 'courses' && (
+          <CourseManagementPanel
+            courses={courses}
+            teachers={teachers}
+            availableClasses={allRosterClasses}
+            allSettingsMap={allSettingsMap}
+            activeCourseId={activeCourseId}
+            onSaveCourse={onSaveCourse}
+            onDeleteCourse={onDeleteCourse}
+            onToggleCourseOpen={onToggleCourseOpen}
+            onEnterCourse={(cid) => {
+              onSelectCourse(cid);
+              setTab('settings');
+            }}
+          />
+        )}
+
+        {isSuperAdmin && tab === 'teachers' && (
+          <TeacherManagementPanel
+            teachers={teachers}
+            courses={courses}
+            onSaveTeacher={onSaveTeacher}
+            onDeleteTeacher={onDeleteTeacher}
+          />
+        )}
+
+        {tab === 'settings' && hasAssignedCourse && (
           <div>
-            <h3 className="text-2xl font-bold mb-6">ตั้งค่าระบบ</h3>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+              <div>
+                <h3 className="text-2xl font-bold text-slate-800">ตั้งค่ารายวิชา: {activeCourse?.name}</h3>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  รหัสห้องสอบ: <span className="font-mono font-bold text-blue-700">{activeCourse?.code}</span> •{' '}
+                  <span className="font-bold text-indigo-700">{formatCourseClasses(activeCourse?.targetClasses)}</span>{' '}
+                  (การตั้งค่านี้มีผลเฉพาะรายวิชานี้เท่านั้น ไม่กระทบวิชาอื่น)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopyActiveCourseLink}
+                className="flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-300 rounded-xl text-sm font-bold cursor-pointer shrink-0"
+              >
+                {copiedCourseLink ? <Check size={16} className="text-emerald-600" /> : <Link2 size={16} />}
+                {copiedCourseLink ? 'คัดลอกลิงก์สอบเรียบร้อย!' : 'คัดลอกลิงก์เข้าสอบส่งให้นักเรียน'}
+              </button>
+            </div>
             <div className="bg-white rounded-xl border border-blue-200 p-6 space-y-6">
               <div className="flex items-center justify-between border-b border-blue-100 pb-6">
                 <div>
-                  <h4 className="font-bold text-lg text-blue-900">สถานะระบบสอบ</h4>
-                  <p className="text-sm text-slate-500">เปิดหรือปิดการเข้าใช้งานระบบสอบสำหรับนักเรียน</p>
+                  <h4 className="font-bold text-lg text-blue-900">สถานะเปิด-ปิดสอบ (เฉพาะวิชา {activeCourse?.name})</h4>
+                  <p className="text-sm text-slate-500">เปิดหรือปิดการเข้าสอบของรายวิชานี้ได้อิสระโดยไม่กระทบครูท่านอื่น</p>
                 </div>
                 <button
                   onClick={() => saveSettings({ ...settings, isOpen: !settings.isOpen })}
-                  className={`px-6 py-2 rounded-full font-bold transition-colors ${settings.isOpen ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
+                  className={`px-6 py-2 rounded-full font-bold transition-colors cursor-pointer ${settings.isOpen ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
                 >
                   {settings.isOpen ? '🟢 ระบบเปิดอยู่' : '🔴 ระบบปิดอยู่'}
                 </button>
               </div>
+
+              {/* Teacher-Selectable Target Classrooms for This Course */}
+              {activeCourse && (
+                <div className="border-b border-blue-100 pb-6">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <div>
+                      <h4 className="font-bold text-lg text-blue-900">
+                        🏫 ห้องเรียนที่สอน / อนุญาตให้เข้าสอบ
+                      </h4>
+                      <p className="text-sm text-slate-500">
+                        เลือกห้องที่คุณครูสอน เพื่อให้แสดงชื่อห้องและชื่อครูกำกับชัดเจนในหน้าเข้าสอบ (กรณีมีครูหลายคนสอนวิชาเดียวกัน) และป้องกันนักเรียนห้องอื่นเข้าสอบผิดห้องอัตโนมัติ
+                      </p>
+                    </div>
+                    {savingTargetClasses && (
+                      <span className="text-xs font-bold text-blue-600 flex items-center gap-1">
+                        <Loader2 size={14} className="animate-spin" /> กำลังบันทึก...
+                      </span>
+                    )}
+                    {!savingTargetClasses && savedClassesToast && (
+                      <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full flex items-center gap-1">
+                        <Check size={14} /> บันทึกห้องเรียนเรียบร้อยแล้ว
+                      </span>
+                    )}
+                  </div>
+                  <div className="max-w-3xl mt-3">
+                    <ClassPickerField
+                      value={activeCourse.targetClasses || []}
+                      availableClasses={allRosterClasses}
+                      onChange={async (nextClasses) => {
+                        setSavingTargetClasses(true);
+                        try {
+                          await onSaveCourse({
+                            ...activeCourse,
+                            targetClasses: sortClassNames(nextClasses),
+                          });
+                          setSavedClassesToast(true);
+                          setTimeout(() => setSavedClassesToast(false), 2200);
+                        } finally {
+                          setSavingTargetClasses(false);
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
               <div>
                 <h4 className="font-bold text-lg text-blue-900 mb-2">ชุดข้อสอบที่ใช้สอบ</h4>
                 <p className="text-sm text-slate-500 mb-4">เลือกประเภทข้อสอบที่ต้องการให้นักเรียนทำ (กลางภาค, ปลายภาค, หรือทั่วไป)</p>
@@ -3460,9 +4143,16 @@ function AdminView({
         )}
         {tab === 'students' && (
           <div>
-            <div className="flex justify-between items-center mb-6">
-              <div className="flex items-center gap-4">
-                <h3 className="text-2xl font-bold">รายชื่อนักเรียน</h3>
+            <div className="flex flex-wrap justify-between items-center gap-4 mb-6">
+              <div className="flex items-center gap-4 flex-wrap">
+                <div>
+                  <h3 className="text-2xl font-bold">รายชื่อนักเรียนกลาง</h3>
+                  {!isSuperAdmin && (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      รายชื่อนักเรียนกลางของโรงเรียน (จัดการเพิ่ม/ลบโดยแอดมินหลัก)
+                    </p>
+                  )}
+                </div>
                 <select 
                   className="border border-blue-200 p-2 rounded-lg bg-white"
                   value={studentClassFilter}
@@ -3474,19 +4164,21 @@ function AdminView({
                   ))}
                 </select>
               </div>
-              <div className="flex gap-2">
-                <button 
-                  onClick={handleImportSheet}
-                  disabled={isImporting}
-                  className="flex items-center gap-2 px-4 py-2 bg-[#8E7B6C] text-white rounded-lg hover:bg-[#726255] text-sm disabled:opacity-50"
-                >
-                  {isImporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                  นำเข้า Google Sheet
-                </button>
-                <button onClick={() => setIsAddingStudent(true)} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg hover:bg-black text-sm">
-                  <Plus size={16} /> เพิ่มนักเรียน
-                </button>
-              </div>
+              {isSuperAdmin && (
+                <div className="flex gap-2">
+                  <button 
+                    onClick={handleImportSheet}
+                    disabled={isImporting}
+                    className="flex items-center gap-2 px-4 py-2 bg-[#8E7B6C] text-white rounded-lg hover:bg-[#726255] text-sm disabled:opacity-50 cursor-pointer"
+                  >
+                    {isImporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                    นำเข้า Google Sheet
+                  </button>
+                  <button onClick={() => setIsAddingStudent(true)} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm cursor-pointer">
+                    <Plus size={16} /> เพิ่มนักเรียน
+                  </button>
+                </div>
+              )}
             </div>
             <div className="bg-white rounded-xl border border-blue-200 overflow-hidden">
               <table className="w-full text-left">
@@ -3496,7 +4188,7 @@ function AdminView({
                     <th className="p-4 font-medium text-blue-900">ชื่อ-สกุล</th>
                     <th className="p-4 font-medium text-blue-900">ชั้น</th>
                     <th className="p-4 font-medium text-blue-900">เลขที่</th>
-                    <th className="p-4 font-medium text-blue-900">จัดการ</th>
+                    {isSuperAdmin && <th className="p-4 font-medium text-blue-900">จัดการ</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E3D5CA]">
@@ -3506,10 +4198,12 @@ function AdminView({
                       <td className="p-4">{s.name}</td>
                       <td className="p-4">{s.class}</td>
                       <td className="p-4">{s.number}</td>
-                      <td className="p-4 flex gap-2 text-slate-500">
-                        <button onClick={() => setEditingStudent(s)} className="hover:text-blue-600"><Edit2 size={18} /></button>
-                        <button onClick={() => setStudentToDelete(s)} className="hover:text-red-600"><Trash2 size={18} /></button>
-                      </td>
+                      {isSuperAdmin && (
+                        <td className="p-4 flex gap-2 text-slate-500">
+                          <button onClick={() => setEditingStudent(s)} className="hover:text-blue-600 cursor-pointer"><Edit2 size={18} /></button>
+                          <button onClick={() => setStudentToDelete(s)} className="hover:text-red-600 cursor-pointer"><Trash2 size={18} /></button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -3518,7 +4212,7 @@ function AdminView({
           </div>
         )}
 
-        {tab === 'mcqs' && (() => {
+        {tab === 'mcqs' && hasAssignedCourse && (() => {
           const mcqClassGroups = Array.from(new Set(mcqs.map((m: MCQ) => m.classGroup).filter(Boolean))).sort();
           const filteredMcqs = mcqs
             .map((m: MCQ, origIndex: number) => ({ m, origIndex }))
@@ -3906,7 +4600,7 @@ function AdminView({
           );
         })()}
 
-        {tab === 'subjs' && (() => {
+        {tab === 'subjs' && hasAssignedCourse && (() => {
           const subjClassGroups = Array.from(new Set(subjs.map((s: Subjective) => s.classGroup).filter(Boolean))).sort();
           const filteredSubjs = subjs
             .map((s: Subjective, origIndex: number) => ({ s, origIndex }))
@@ -4275,7 +4969,7 @@ function AdminView({
           );
         })()}
 
-        {tab === 'grading' && (() => {
+        {tab === 'grading' && hasAssignedCourse && (() => {
           const visibleSubmissions = submissions
             .filter((s: Submission) => {
               const student = students.find((st: Student) => st.id === s.studentId);
@@ -4587,7 +5281,7 @@ function AdminView({
               <div className="flex justify-end gap-2 mt-6">
                 <button onClick={() => setEditingStudent(null)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
                 <button onClick={() => {
-                  setStudents(students.map((s: Student) => s.id === editingStudent.id ? editingStudent : s));
+                  onSaveSingleStudent(editingStudent);
                   setEditingStudent(null);
                 }} className="px-4 py-2 bg-[#8E7B6C] text-white rounded hover:bg-[#726255]">บันทึก</button>
               </div>
@@ -4654,7 +5348,7 @@ function AdminView({
               <div className="flex justify-end gap-2 mt-6">
                 <button onClick={()=>setIsAddingMcq(false)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded-xl hover:bg-slate-50">ยกเลิก</button>
                 <button onClick={() => {
-                  setMcqs([...mcqs, { ...newMcq, id: Date.now().toString() }]);
+                  onSaveMcqItem({ ...newMcq, id: `mcq_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` });
                   setIsAddingMcq(false);
                   setNewMcq({ id: '', text: '', options: ['', '', '', '', ''], correctIndex: 0, classGroup: '6/3' });
                 }} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm">เพิ่มข้อสอบ</button>
@@ -4887,7 +5581,7 @@ function AdminView({
             <div className="flex justify-end gap-2">
               <button onClick={() => setStudentToDelete(null)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
-                setStudents(students.filter((x: Student) => x.id !== studentToDelete.id));
+                onDeleteSingleStudent(studentToDelete.id);
                 setStudentToDelete(null);
               }} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">ลบรายชื่อ</button>
             </div>
@@ -4906,7 +5600,7 @@ function AdminView({
             <div className="flex justify-end gap-2">
               <button onClick={() => setMcqToDelete(null)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
-                setMcqs(mcqs.filter((m: MCQ) => m.id !== mcqToDelete.id));
+                onDeleteMcqItem(mcqToDelete.id);
                 if (activeExamMcqSet.has(mcqToDelete.id)) {
                   saveSettings({
                     ...settings,
@@ -4945,7 +5639,7 @@ function AdminView({
               <div className="flex justify-end gap-2 mt-6">
                 <button onClick={() => setIsAddingSubj(false)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded-xl hover:bg-slate-50">ยกเลิก</button>
                 <button onClick={() => {
-                  setSubjs([...subjs, { ...newSubj, id: Date.now().toString() }]);
+                  onSaveSubjItem({ ...newSubj, id: `subj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` });
                   setIsAddingSubj(false);
                   setNewSubj({ id: '', text: '', classGroup: '6/3' });
                 }} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm">เพิ่มข้อสอบ</button>
@@ -4980,7 +5674,7 @@ function AdminView({
               <div className="flex justify-end gap-2 mt-6">
                 <button onClick={() => setEditingSubj(null)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded-xl hover:bg-slate-50">ยกเลิก</button>
                 <button onClick={() => {
-                  setSubjs(subjs.map((s: Subjective) => s.id === editingSubj.id ? editingSubj : s));
+                  onSaveSubjItem(editingSubj);
                   setEditingSubj(null);
                 }} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm">บันทึก</button>
               </div>
@@ -5000,7 +5694,7 @@ function AdminView({
             <div className="flex justify-end gap-2">
               <button onClick={() => setSubjToDelete(null)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
-                setSubjs(subjs.filter((s: Subjective) => s.id !== subjToDelete.id));
+                onDeleteSubjItem(subjToDelete.id);
                 if (activeExamSubjSet.has(subjToDelete.id)) {
                   saveSettings({
                     ...settings,
@@ -5017,15 +5711,15 @@ function AdminView({
       {confirmDeleteAllMcqs && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl p-6 w-full max-w-md">
-            <h3 className="text-xl font-bold mb-4 text-red-600">ลบข้อสอบปรนัยทั้งหมด</h3>
+            <h3 className="text-xl font-bold mb-4 text-red-600">ลบข้อสอบปรนัยทั้งหมด (เฉพาะวิชา {activeCourse?.name})</h3>
             <p className="mb-6 text-slate-700">
-              คุณแน่ใจหรือไม่ว่าต้องการลบข้อสอบปรนัยทั้งหมดในคลัง? <br/><br/>
+              คุณแน่ใจหรือไม่ว่าต้องการลบข้อสอบปรนัยทั้งหมดในรายวิชานี้? (ไม่กระทบข้อสอบของครูท่านอื่น)<br/><br/>
               <span className="font-bold text-red-600">การกระทำนี้ไม่สามารถกู้คืนได้</span>
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmDeleteAllMcqs(false)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
-                setMcqs([]);
+                onClearCourseMcqs();
                 if (activeExamMcqIds.length > 0) {
                   saveSettings({ ...settings, selectedMcqIds: [] });
                 }
@@ -5039,15 +5733,15 @@ function AdminView({
       {confirmDeleteAllSubjs && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl p-6 w-full max-w-md">
-            <h3 className="text-xl font-bold mb-4 text-red-600">ลบข้อสอบอัตนัยทั้งหมด</h3>
+            <h3 className="text-xl font-bold mb-4 text-red-600">ลบข้อสอบอัตนัยทั้งหมด (เฉพาะวิชา {activeCourse?.name})</h3>
             <p className="mb-6 text-slate-700">
-              คุณแน่ใจหรือไม่ว่าต้องการลบข้อสอบอัตนัยทั้งหมดในคลัง? <br/><br/>
+              คุณแน่ใจหรือไม่ว่าต้องการลบข้อสอบอัตนัยทั้งหมดในรายวิชานี้? (ไม่กระทบข้อสอบของครูท่านอื่น)<br/><br/>
               <span className="font-bold text-red-600">การกระทำนี้ไม่สามารถกู้คืนได้</span>
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmDeleteAllSubjs(false)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
-                setSubjs([]);
+                onClearCourseSubjs();
                 if (activeExamSubjIds.length > 0) {
                   saveSettings({ ...settings, selectedSubjIds: [] });
                 }
@@ -5206,16 +5900,17 @@ function AdminView({
             </div>
             <h3 className="text-2xl font-bold text-center text-slate-900 mb-2">ล้างข้อมูลการสอบของนักเรียนทั้งหมด</h3>
             <p className="text-slate-600 text-center mb-6 text-sm">
-              คุณกำลังจะล้างข้อมูลผลการสอบของนักเรียนทั้งหมดจำนวน{' '}
-              <span className="font-bold text-red-600 text-base">{submissions.length} รายการ</span>{' '}
-              ออกจากฐานข้อมูลกลาง (Cloud Firestore)
+              คุณกำลังจะล้างข้อมูลผลการสอบเฉพาะวิชา{' '}
+              <span className="font-bold text-blue-800">{activeCourse?.name || 'วิชานี้'}</span>{' '}
+              จำนวน <span className="font-bold text-red-600 text-base">{submissions.length} รายการ</span>{' '}
+              ออกจากฐานข้อมูลกลาง (ไม่กระทบผลสอบของรายวิชาอื่น)
             </p>
 
             <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-xl text-xs text-red-900 space-y-2 mb-6">
               <p className="font-bold text-sm text-red-800">⚠️ ข้อควรระวังอย่างยิ่ง:</p>
               <ul className="list-disc pl-4 space-y-1">
-                <li>คะแนน คำตอบอัตนัย และประวัติการทำข้อสอบทั้งหมดจะถูกลบอย่างถาวร</li>
-                <li>นักเรียนทุกคนจะสามารถกลับมาเริ่มทำข้อสอบรอบใหม่ได้</li>
+                <li>คะแนน คำตอบอัตนัย และประวัติการทำข้อสอบในวิชานี้จะถูกลบอย่างถาวร</li>
+                <li>นักเรียนทุกคนจะสามารถกลับมาเริ่มทำข้อสอบวิชานี้รอบใหม่ได้</li>
                 <li>ไม่สามารถเรียกคืนข้อมูลได้ หากยังไม่ได้ดาวน์โหลดไฟล์สำรองข้อมูล</li>
               </ul>
             </div>
