@@ -3,7 +3,7 @@ import {
   AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, 
   Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw, Copy, Check, 
   Printer, FileCheck, Archive, ArchiveRestore, FileDown, Highlighter, Bold, Italic, 
-  Underline, Eye, BookOpen, Search, ListChecks, Users, Link2, ShieldCheck
+  Underline, Eye, BookOpen, Search, ListChecks, Users, Link2, ShieldCheck, FileSpreadsheet, Sparkles
 } from 'lucide-react';
 import {
   replaceSharedCollection,
@@ -60,7 +60,7 @@ import {
   CourseManagementPanel,
   TeacherManagementPanel,
 } from './components/SuperAdminPanels';
-import mammoth from 'mammoth';
+import { ExamImportModal } from './components/ExamImportModal';
 
 // --- MOCK INITIAL DATA ---
 const INITIAL_STUDENTS: Student[] = [
@@ -1380,7 +1380,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-slate-50 text-slate-700 font-sans selection:bg-red-100 text-red-800 selection:text-slate-700">
-        {!isAdmin && !settings.isOpen && (
+        {!isAdmin && currentView !== 'instructions' && !settings.isOpen && (
           <div className="bg-gradient-to-r from-red-600 via-rose-600 to-red-700 text-white text-xs sm:text-sm font-bold py-2.5 px-4 text-center flex items-center justify-center gap-2 shadow-sm sticky top-0 z-50">
             <Lock size={16} className="shrink-0 animate-pulse" />
             <span>
@@ -1390,8 +1390,6 @@ export default function App() {
         )}
       {currentView === 'instructions' && (
         <InstructionView 
-          isOpen={settings.isOpen} 
-          activeCourse={activeCourse}
           onNext={() => setCurrentView('login')} 
         />
       )}
@@ -1533,7 +1531,7 @@ export default function App() {
 }
 
 // --- INSTRUCTION VIEW ---
-function InstructionView({ isOpen = true, activeCourse, onNext }: { isOpen?: boolean; activeCourse?: Course; onNext: () => void }) {
+function InstructionView({ onNext }: { onNext: () => void }) {
   const [isAgreed, setIsAgreed] = useState(false);
 
   return (
@@ -1550,40 +1548,11 @@ function InstructionView({ isOpen = true, activeCourse, onNext }: { isOpen?: boo
           </div>
           <h1 className="text-3xl font-bold text-white mb-2 drop-shadow-md">โรงเรียนบ้านม่วงพิทยาคม</h1>
           <h2 className="text-xl text-blue-100">ระบบสอบวัดผลออนไลน์กลาง</h2>
-          {activeCourse && (
-            <div className="mt-3 flex flex-col items-center gap-1.5">
-              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/15 border border-white/25 text-white text-sm font-bold backdrop-blur-xs">
-                <BookOpen size={15} />
-                <span>{activeCourse.name} ({activeCourse.code})</span>
-              </div>
-              <div className="text-xs text-blue-100/95 font-medium flex flex-wrap items-center justify-center gap-2">
-                <span>🏫 {formatCourseClasses(activeCourse.targetClasses)}</span>
-                {activeCourse.teacherName && (
-                  <>
-                    <span>•</span>
-                    <span>👨‍🏫 {activeCourse.teacherName}</span>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
+          <p className="text-xs text-blue-100/80 mt-2 font-normal tracking-wide">
+            ผู้ดูแลระบบ : นายณัฐดนัย พรหมสุภา
+          </p>
         </div>
 
-        {/* System Closed Notice Banner */}
-        {!isOpen && (
-          <div className="mx-6 sm:mx-8 mt-6 p-4 rounded-2xl bg-amber-50 border-2 border-amber-300 text-amber-950 flex items-start gap-3.5 shadow-xs">
-            <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs mt-0.5">
-              <Lock size={20} />
-            </div>
-            <div className="text-left text-xs sm:text-sm">
-              <span className="font-bold text-amber-950 block text-base">⛔ ขณะนี้ระบบสอบปิดให้บริการอยู่ (ระบบปิด)</span>
-              <span className="text-amber-800 leading-relaxed block mt-0.5">
-                คุณครูผู้คุมสอบยังไม่เปิดระบบให้นักเรียนเข้าทำข้อสอบ กรุณารอคุณครูแจ้งเปิดระบบสอบ
-              </span>
-            </div>
-          </div>
-        )}
-        
         <div className="p-8 space-y-8 text-slate-700 leading-relaxed">
           <div className="bg-blue-50/50 p-6 rounded-2xl border border-blue-100">
             <p className="text-lg text-blue-900 font-bold mb-4 flex items-center gap-2">
@@ -3079,8 +3048,10 @@ function AdminView({
     }
   };
 
-  const [isImportingMcqText, setIsImportingMcqText] = useState(false);
-  const [mcqImportText, setMcqImportText] = useState('');
+  const [importModalConfig, setImportModalConfig] = useState<{
+    mode: 'mcq' | 'subj';
+    initialSource: 'word' | 'excel' | 'text';
+  } | null>(null);
   const [editingMcq, setEditingMcq] = useState<MCQ | null>(null);
   const [isAddingMcq, setIsAddingMcq] = useState(false);
   const [newMcq, setNewMcq] = useState<MCQ>({ id: '', text: '', options: ['', '', '', '', ''], correctIndex: 0, classGroup: '6/3' });
@@ -3273,153 +3244,6 @@ function AdminView({
     if (!gradingSub) return;
     onSaveGradedSubmission({ ...gradingSub, subjScores: tempScores });
     setGradingSub(null);
-  };
-
-  const handleImportTextSubmit = (targetClass: string, targetExamType: 'midterm' | 'final' | 'general' = 'general') => {
-    if (!mcqImportText.trim()) {
-      alert('กรุณาวางข้อความข้อสอบ');
-      return;
-    }
-    if (!targetClass) targetClass = 'ทั้งหมด';
-
-    try {
-      const text = mcqImportText;
-      const lines = text.split('\n').map(l => l.trim().replace(/[\u200B-\u200D\uFEFF]/g, '')).filter(Boolean);
-      const parsedMcqs: MCQ[] = [];
-      let currentMcq: any = null;
-      
-      const qRegex = /^(?:ข้อ\s*(?:ที่)?\s*|q(?:uestion)?\s*\(?|\[|\()?0*(\d+)[\.\)\]\s]/i;
-      const optRegex = /^(?:\(|\[)?([กขคงจa-e])[\.\)\]\s]/i;
-      const ansRegex = /(?:answer|ตอบ|เฉลย)\s*(?:ข้อ)?\s*:?\s*(?:ข้อ)?\s*([กขคงจa-e])/i;
-
-      for (const line of lines) {
-        if (line.match(qRegex)) {
-          if (currentMcq) parsedMcqs.push(currentMcq);
-          currentMcq = {
-            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-            text: line.replace(/^(?:ข้อ\s*(?:ที่)?\s*|q(?:uestion)?\s*\(?|\[|\()?0*(\d+)[\.\)\]\s]+/i, ''),
-            options: [],
-            correctIndex: 0,
-            classGroup: targetClass || 'ทั้งหมด',
-            examType: targetExamType
-          };
-        } else if (line.match(ansRegex)) {
-          if (currentMcq) {
-            const match = line.match(ansRegex);
-            if (match) {
-              const ansChar = match[1].toLowerCase();
-              const charMap: Record<string, number> = { 'ก': 0, 'ข': 1, 'ค': 2, 'ง': 3, 'จ': 4, 'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4 };
-              if (charMap[ansChar] !== undefined) {
-                currentMcq.correctIndex = charMap[ansChar];
-              }
-            }
-          }
-        } else if (line.match(optRegex) && currentMcq) {
-          currentMcq.options.push(line.replace(/^(?:\(|\[)?([กขคงจa-e])[\.\)\]\s]+/i, ''));
-        } else if (currentMcq) {
-          if (currentMcq.options.length === 0) {
-            currentMcq.text = (currentMcq.text ? currentMcq.text + '\n' : '') + line;
-          } else {
-            const lastIdx = currentMcq.options.length - 1;
-            currentMcq.options[lastIdx] = (currentMcq.options[lastIdx] ? currentMcq.options[lastIdx] + '\n' : '') + line;
-          }
-        }
-      }
-      if (currentMcq) parsedMcqs.push(currentMcq);
-      
-      if (parsedMcqs.length > 0) {
-        onSaveMcqsBatch(parsedMcqs);
-        alert(`นำเข้าข้อสอบสำเร็จ ${parsedMcqs.length} ข้อ เข้าสู่รายวิชา ${activeCourse?.name || ''}`);
-        setIsImportingMcqText(false);
-        setMcqImportText('');
-      } else {
-        alert('ไม่พบข้อสอบที่สามารถนำเข้าได้\n\nคำแนะนำ:\n1. หากใช้ระบบ "พิมพ์เลขข้ออัตโนมัติ" ใน Word เมื่อคัดลอกมาวาง เลขข้ออาจจะหายไป (แนะนำให้นำเข้าไฟล์ Word โดยตรง หรือพิมพ์เลขข้อเอง)\n2. รูปแบบต้องมีเลขข้อ (เช่น 1.), ตัวเลือก (เช่น ก., ข.), และเฉลย (เช่น ตอบ: ก)');
-      }
-    } catch (err: any) {
-      console.error(err);
-      alert('เกิดข้อผิดพลาดในการแปลงข้อความ: ' + err.message);
-    }
-  };
-
-  const handleImportWord = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    // In iframe environments, window.prompt might be blocked. 
-    // We will use 'ทั้งหมด' as default. Users can edit later or use text import for custom class groups.
-    const targetClass = 'ทั้งหมด';
-    
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const arrayBuffer = event.target?.result as ArrayBuffer;
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        const text = result.value;
-        
-        // Simple heuristic parser:
-        // 1. Question?
-        // ก. option
-        // ข. option
-        // ค. option
-        // ง. option
-        // จ. option
-        // Answer: ก
-        
-        const lines = text.split('\n').map(l => l.trim().replace(/[\u200B-\u200D\uFEFF]/g, '')).filter(Boolean);
-        const parsedMcqs: MCQ[] = [];
-        let currentMcq: any = null;
-        
-        const qRegex = /^(?:ข้อ\s*(?:ที่)?\s*|q(?:uestion)?\s*\(?|\[|\()?0*(\d+)[\.\)\]\s]/i;
-        const optRegex = /^(?:\(|\[)?([กขคงจa-e])[\.\)\]\s]/i;
-        const ansRegex = /(?:answer|ตอบ|เฉลย)\s*(?:ข้อ)?\s*:?\s*(?:ข้อ)?\s*([กขคงจa-e])/i;
-
-        for (const line of lines) {
-          if (line.match(qRegex)) {
-            if (currentMcq) parsedMcqs.push(currentMcq);
-            currentMcq = {
-              id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-              text: line.replace(/^(?:ข้อ\s*(?:ที่)?\s*|q(?:uestion)?\s*\(?|\[|\()?0*(\d+)[\.\)\]\s]+/i, ''),
-              options: [],
-              correctIndex: 0,
-              classGroup: targetClass || 'ทั้งหมด'
-            };
-          } else if (line.match(ansRegex)) {
-            if (currentMcq) {
-              const match = line.match(ansRegex);
-              if (match) {
-                const ansChar = match[1].toLowerCase();
-                const charMap: Record<string, number> = { 'ก': 0, 'ข': 1, 'ค': 2, 'ง': 3, 'จ': 4, 'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4 };
-                if (charMap[ansChar] !== undefined) {
-                  currentMcq.correctIndex = charMap[ansChar];
-                }
-              }
-            }
-          } else if (line.match(optRegex) && currentMcq) {
-            currentMcq.options.push(line.replace(/^(?:\(|\[)?([กขคงจa-e])[\.\)\]\s]+/i, ''));
-          } else if (currentMcq) {
-            if (currentMcq.options.length === 0) {
-              currentMcq.text = (currentMcq.text ? currentMcq.text + '\n' : '') + line;
-            } else {
-              const lastIdx = currentMcq.options.length - 1;
-              currentMcq.options[lastIdx] = (currentMcq.options[lastIdx] ? currentMcq.options[lastIdx] + '\n' : '') + line;
-            }
-          }
-        }
-        if (currentMcq) parsedMcqs.push(currentMcq);
-        
-        if (parsedMcqs.length > 0) {
-          onSaveMcqsBatch(parsedMcqs);
-          alert(`นำเข้าข้อสอบสำเร็จ ${parsedMcqs.length} ข้อ เข้าสู่รายวิชา ${activeCourse?.name || ''}`);
-        } else {
-          alert('ไม่พบข้อสอบที่สามารถนำเข้าได้\n\nคำแนะนำ:\n1. หากใช้ระบบ "พิมพ์เลขข้ออัตโนมัติ" ใน Word ระบบจะไม่สามารถอ่านเลขข้อได้ (ให้พิมพ์ 1. แล้วเว้นวรรคเอง)\n2. รูปแบบต้องมีเลขข้อ (เช่น 1.), ตัวเลือก (เช่น ก., ข.), และเฉลย (เช่น Answer: ก)');
-        }
-      } catch (err: any) {
-        console.error(err);
-        alert('เกิดข้อผิดพลาดในการอ่านไฟล์ Word: ' + err.message);
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = ''; // reset
   };
 
   const handleCopyActiveCourseLink = () => {
@@ -4266,13 +4090,24 @@ function AdminView({
                   <button onClick={() => setConfirmDeleteAllMcqs(true)} className="flex items-center gap-2 px-3.5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm cursor-pointer">
                     <Trash2 size={16} /> ลบทั้งหมด
                   </button>
-                  <button onClick={() => setIsImportingMcqText(true)} className="flex items-center gap-2 px-3.5 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 text-sm cursor-pointer">
-                    <Upload size={16} /> นำเข้าข้อความ
+                  <button
+                    onClick={() => setImportModalConfig({ mode: 'mcq', initialSource: 'word' })}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium cursor-pointer shadow-2xs"
+                  >
+                    <Sparkles size={16} /> นำเข้า Word / AI
                   </button>
-                  <label className="flex items-center gap-2 px-3.5 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 text-sm cursor-pointer">
-                    <Upload size={16} /> นำเข้า Word
-                    <input type="file" accept=".docx" className="hidden" onChange={handleImportWord} />
-                  </label>
+                  <button
+                    onClick={() => setImportModalConfig({ mode: 'mcq', initialSource: 'excel' })}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium cursor-pointer shadow-2xs"
+                  >
+                    <FileSpreadsheet size={16} /> นำเข้า Excel
+                  </button>
+                  <button
+                    onClick={() => setImportModalConfig({ mode: 'mcq', initialSource: 'text' })}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg text-sm cursor-pointer"
+                  >
+                    <Upload size={16} /> วางข้อความ
+                  </button>
                   <button onClick={() => setIsAddingMcq(true)} className="flex items-center gap-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium cursor-pointer">
                     <Plus size={16} /> เพิ่มข้อสอบ
                   </button>
@@ -4651,6 +4486,18 @@ function AdminView({
                 <div className="flex gap-2 items-center flex-wrap">
                   <button onClick={() => setConfirmDeleteAllSubjs(true)} className="flex items-center gap-2 px-3.5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm cursor-pointer">
                     <Trash2 size={16} /> ลบทั้งหมด
+                  </button>
+                  <button
+                    onClick={() => setImportModalConfig({ mode: 'subj', initialSource: 'word' })}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium cursor-pointer shadow-2xs"
+                  >
+                    <Sparkles size={16} /> นำเข้า Word / AI
+                  </button>
+                  <button
+                    onClick={() => setImportModalConfig({ mode: 'subj', initialSource: 'excel' })}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium cursor-pointer shadow-2xs"
+                  >
+                    <FileSpreadsheet size={16} /> นำเข้า Excel
                   </button>
                   <button onClick={() => setIsAddingSubj(true)} className="flex items-center gap-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium cursor-pointer">
                     <Plus size={16} /> เพิ่มข้อสอบ
@@ -5358,57 +5205,28 @@ function AdminView({
         </div>
       )}
 
-      {isImportingMcqText && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl p-6 w-full max-w-2xl flex flex-col h-[90vh]">
-            <h3 className="text-xl font-bold mb-2 text-blue-900 shrink-0">นำเข้าข้อสอบจากข้อความ (คัดลอกและวาง)</h3>
-            <p className="text-sm text-slate-500 mb-4 shrink-0">
-              รูปแบบที่รองรับ:<br/>
-              1. คำถาม<br/>
-              ก. ตัวเลือกที่ 1<br/>
-              ข. ตัวเลือกที่ 2<br/>
-              ค. ตัวเลือกที่ 3<br/>
-              ง. ตัวเลือกที่ 4<br/>
-              ตอบ: ก
-            </p>
-            <div className="flex gap-4 mb-4 shrink-0">
-              <div className="flex-1">
-                <label className="block text-sm font-bold mb-1">ระดับชั้น (เช่น 6/3, หรือ ทั้งหมด)</label>
-                <input 
-                  type="text" 
-                  className="w-full border border-blue-200 p-2 rounded focus:outline-none focus:ring-1 focus:ring-blue-300" 
-                  placeholder="เช่น 6/3, 6/8 หรือ ทั้งหมด" 
-                  defaultValue="ทั้งหมด"
-                  id="importClassInput"
-                />
-              </div>
-              <div className="flex-1">
-                <label className="block text-sm font-bold mb-1">ประเภทข้อสอบ</label>
-                <select className="w-full border border-blue-200 p-2 rounded focus:outline-none focus:ring-1 focus:ring-blue-300" id="importExamTypeInput">
-                  <option value="general">ทั่วไป</option>
-                  <option value="midterm">กลางภาค</option>
-                  <option value="final">ปลายภาค</option>
-                </select>
-              </div>
-            </div>
-            <div className="flex-1 mb-4 relative min-h-[150px]">
-              <textarea 
-                className="absolute inset-0 w-full h-full border border-blue-200 p-4 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300 resize-none" 
-                placeholder="วางข้อความที่นี่..." 
-                value={mcqImportText} 
-                onChange={e => setMcqImportText(e.target.value)} 
-              />
-            </div>
-            <div className="flex justify-end gap-2 shrink-0">
-              <button onClick={() => { setIsImportingMcqText(false); setMcqImportText(''); }} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
-              <button onClick={() => {
-                const classInput = document.getElementById('importClassInput') as HTMLInputElement;
-                const typeInput = document.getElementById('importExamTypeInput') as HTMLSelectElement;
-                handleImportTextSubmit(classInput ? classInput.value : 'ทั้งหมด', typeInput ? typeInput.value as any : 'general');
-              }} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">นำเข้าข้อสอบ</button>
-            </div>
-          </div>
-        </div>
+      {importModalConfig && (
+        <ExamImportModal
+          mode={importModalConfig.mode}
+          initialSource={importModalConfig.initialSource}
+          courseId={activeCourseId}
+          courseName={activeCourse?.name || 'รายวิชาปัจจุบัน'}
+          defaultClassGroup={
+            activeCourse?.targetClasses && activeCourse.targetClasses.length > 0
+              ? activeCourse.targetClasses.join(', ')
+              : 'ทั้งหมด'
+          }
+          defaultExamType={settings.currentExamType || 'general'}
+          onClose={() => setImportModalConfig(null)}
+          onConfirmImportMcqs={(items) => {
+            onSaveMcqsBatch(items);
+            alert(`นำเข้าข้อสอบปรนัยสำเร็จ ${items.length} ข้อ เข้าสู่รายวิชา ${activeCourse?.name || ''}`);
+          }}
+          onConfirmImportSubjs={(items) => {
+            onSaveSubjsBatch(items);
+            alert(`นำเข้าข้อสอบอัตนัยสำเร็จ ${items.length} ข้อ เข้าสู่รายวิชา ${activeCourse?.name || ''}`);
+          }}
+        />
       )}
 
       {editingMcq && (
