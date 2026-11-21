@@ -3,7 +3,7 @@ import {
   AlertCircle, Clock, CheckCircle2, ChevronRight, User, LogOut, Download, Plus, Trash2, 
   Edit2, ShieldAlert, Loader2, X, CheckSquare, Upload, Lock, RefreshCw, Copy, Check, 
   Printer, FileCheck, Archive, ArchiveRestore, FileDown, Highlighter, Bold, Italic, 
-  Underline, Eye, BookOpen 
+  Underline, Eye, BookOpen, Search, ListChecks
 } from 'lucide-react';
 import { replaceSharedCollection, subscribeSharedCollection, upsertSharedItems, saveSubmissionDirectly, flushPendingSubmissions, deleteSubmissionDirectly, deleteSubmissionsBatch, clearAllSubmissionsDirectly, type SharedCollectionName } from './firebase';
 import mammoth from 'mammoth';
@@ -17,6 +17,10 @@ type Settings = {
   maxMcqCount?: number; // 0 หรือ undefined = ทั้งหมดในคลัง
   maxSubjCount?: number; // 0 หรือ undefined = ทั้งหมดในคลัง
   questionSelectionMode?: 'random' | 'order'; // 'random' (สุ่มข้อสอบ) หรือ 'order' (เรียงตามลำดับคลัง)
+  useSelectedMcqs?: boolean; // true = ให้นักเรียนทำเฉพาะข้อสอบปรนัยที่ครูเลือกไว้ โดยไม่ต้องลบข้ออื่น
+  selectedMcqIds?: string[]; // รายการ ID ข้อสอบปรนัยที่ครูเลือกให้ออกสอบ
+  useSelectedSubjs?: boolean; // true = ให้นักเรียนทำเฉพาะข้อสอบอัตนัยที่ครูเลือกไว้ โดยไม่ต้องลบข้ออื่น
+  selectedSubjIds?: string[]; // รายการ ID ข้อสอบอัตนัยที่ครูเลือกให้ออกสอบ
 };
 
 type Student = {
@@ -131,6 +135,24 @@ const matchesClassGroup = (itemClassGroup?: string, targetClass?: string) => {
 const matchesExamType = (itemExamType?: string, currentExamType?: string) => {
   if (!itemExamType || itemExamType === 'general' || !currentExamType || currentExamType === 'general') return true;
   return itemExamType === currentExamType;
+};
+
+const getEligibleMcqs = (allMcqs: MCQ[], settings: Settings, targetClass?: string): MCQ[] => {
+  if (settings.examFormat === 'subj_only') return [];
+  const selectedSet = settings.useSelectedMcqs ? new Set(settings.selectedMcqIds || []) : null;
+  return allMcqs.filter(m => {
+    if (selectedSet && !selectedSet.has(m.id)) return false;
+    return matchesExamType(m.examType, settings.currentExamType) && matchesClassGroup(m.classGroup, targetClass);
+  });
+};
+
+const getEligibleSubjs = (allSubjs: Subjective[], settings: Settings, targetClass?: string): Subjective[] => {
+  if (settings.examFormat === 'mcq_only') return [];
+  const selectedSet = settings.useSelectedSubjs ? new Set(settings.selectedSubjIds || []) : null;
+  return allSubjs.filter(s => {
+    if (selectedSet && !selectedSet.has(s.id)) return false;
+    return matchesExamType(s.examType, settings.currentExamType) && matchesClassGroup(s.classGroup, targetClass);
+  });
 };
 
 // --- FORMATTED TEXT PARSER & RENDERER ---
@@ -789,7 +811,11 @@ export default function App() {
       examFormat: 'both',
       maxMcqCount: 0,
       maxSubjCount: 0,
-      questionSelectionMode: 'random'
+      questionSelectionMode: 'random',
+      useSelectedMcqs: false,
+      selectedMcqIds: [],
+      useSelectedSubjs: false,
+      selectedSubjIds: []
     };
   });
 
@@ -1184,8 +1210,8 @@ export default function App() {
         />
       )}
       {currentView === 'student-info' && currentUser && (() => {
-        const eligibleMcqs = settings.examFormat === 'subj_only' ? [] : mcqs.filter(m => matchesExamType(m.examType, settings.currentExamType) && matchesClassGroup(m.classGroup, currentUser.class));
-        const eligibleSubjs = settings.examFormat === 'mcq_only' ? [] : subjs.filter(s => matchesExamType(s.examType, settings.currentExamType) && matchesClassGroup(s.classGroup, currentUser.class));
+        const eligibleMcqs = getEligibleMcqs(mcqs, settings, currentUser.class);
+        const eligibleSubjs = getEligibleSubjs(subjs, settings, currentUser.class);
         const mcqCountToTake = settings.maxMcqCount && settings.maxMcqCount > 0 ? Math.min(settings.maxMcqCount, eligibleMcqs.length) : eligibleMcqs.length;
         const subjCountToTake = settings.maxSubjCount && settings.maxSubjCount > 0 ? Math.min(settings.maxSubjCount, eligibleSubjs.length) : eligibleSubjs.length;
 
@@ -1207,8 +1233,8 @@ export default function App() {
               const updatedUser = {...currentUser, class: cls};
               setCurrentUser(updatedUser);
 
-              const poolMcqs = settings.examFormat === 'subj_only' ? [] : mcqs.filter(m => matchesExamType(m.examType, settings.currentExamType) && matchesClassGroup(m.classGroup, cls));
-              const poolSubjs = settings.examFormat === 'mcq_only' ? [] : subjs.filter(s => matchesExamType(s.examType, settings.currentExamType) && matchesClassGroup(s.classGroup, cls));
+              const poolMcqs = getEligibleMcqs(mcqs, settings, cls);
+              const poolSubjs = getEligibleSubjs(subjs, settings, cls);
 
               const chosenMcqs = selectExamQuestions(poolMcqs, settings.maxMcqCount, settings.questionSelectionMode || 'random');
               const chosenSubjs = selectExamQuestions(poolSubjs, settings.maxSubjCount, settings.questionSelectionMode || 'random');
@@ -1221,8 +1247,8 @@ export default function App() {
         );
       })()}
       {currentView === 'exam' && currentUser && (() => {
-        const poolMcqs = settings.examFormat === 'subj_only' ? [] : mcqs.filter(m => matchesExamType(m.examType, settings.currentExamType) && matchesClassGroup(m.classGroup, currentUser.class));
-        const poolSubjs = settings.examFormat === 'mcq_only' ? [] : subjs.filter(s => matchesExamType(s.examType, settings.currentExamType) && matchesClassGroup(s.classGroup, currentUser.class));
+        const poolMcqs = getEligibleMcqs(mcqs, settings, currentUser.class);
+        const poolSubjs = getEligibleSubjs(subjs, settings, currentUser.class);
 
         const examMcqs = activeExamQuestions ? activeExamQuestions.mcqs : selectExamQuestions(poolMcqs, settings.maxMcqCount, settings.questionSelectionMode || 'random');
         const examSubjs = activeExamQuestions ? activeExamQuestions.subjs : selectExamQuestions(poolSubjs, settings.maxSubjCount, settings.questionSelectionMode || 'random');
@@ -2555,6 +2581,83 @@ function AdminView({
   const [selectedSubjs, setSelectedSubjs] = useState<Set<string>>(new Set());
   const [selectedSubmissions, setSelectedSubmissions] = useState<Set<string>>(new Set());
 
+  // ตัวกรองและค้นหาสำหรับคลังข้อสอบปรนัยและอัตนัย
+  const [mcqSelectionFilter, setMcqSelectionFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [mcqSearch, setMcqSearch] = useState('');
+  const [mcqClassFilter, setMcqClassFilter] = useState('all');
+  const [mcqExamTypeFilter, setMcqExamTypeFilter] = useState('all');
+
+  const [subjSelectionFilter, setSubjSelectionFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [subjSearch, setSubjSearch] = useState('');
+  const [subjClassFilter, setSubjClassFilter] = useState('all');
+  const [subjExamTypeFilter, setSubjExamTypeFilter] = useState('all');
+
+  // รายการข้อสอบที่ครูเลือกไว้สำหรับออกสอบ (กรองเฉพาะ ID ที่ยังมีอยู่ในคลังจริง)
+  const mcqIdSet = new Set(mcqs.map((m: MCQ) => m.id));
+  const subjIdSet = new Set(subjs.map((s: Subjective) => s.id));
+  const activeExamMcqIds: string[] = (settings.selectedMcqIds || []).filter((id: string) => mcqIdSet.has(id));
+  const activeExamSubjIds: string[] = (settings.selectedSubjIds || []).filter((id: string) => subjIdSet.has(id));
+  const activeExamMcqSet = new Set<string>(activeExamMcqIds);
+  const activeExamSubjSet = new Set<string>(activeExamSubjIds);
+
+  const toggleExamQuestion = (type: 'mcqs' | 'subjs', questionId: string) => {
+    if (type === 'mcqs') {
+      const next = new Set(activeExamMcqIds);
+      const isAdding = !next.has(questionId);
+      if (isAdding) next.add(questionId);
+      else next.delete(questionId);
+      saveSettings({
+        ...settings,
+        useSelectedMcqs: isAdding ? true : settings.useSelectedMcqs,
+        selectedMcqIds: Array.from(next),
+      });
+    } else {
+      const next = new Set(activeExamSubjIds);
+      const isAdding = !next.has(questionId);
+      if (isAdding) next.add(questionId);
+      else next.delete(questionId);
+      saveSettings({
+        ...settings,
+        useSelectedSubjs: isAdding ? true : settings.useSelectedSubjs,
+        selectedSubjIds: Array.from(next),
+      });
+    }
+  };
+
+  const bulkSetExamQuestions = (type: 'mcqs' | 'subjs', questionIds: string[], include: boolean) => {
+    if (type === 'mcqs') {
+      const next = new Set(activeExamMcqIds);
+      questionIds.forEach(id => {
+        if (include) next.add(id);
+        else next.delete(id);
+      });
+      saveSettings({
+        ...settings,
+        useSelectedMcqs: include ? true : settings.useSelectedMcqs,
+        selectedMcqIds: Array.from(next),
+      });
+    } else {
+      const next = new Set(activeExamSubjIds);
+      questionIds.forEach(id => {
+        if (include) next.add(id);
+        else next.delete(id);
+      });
+      saveSettings({
+        ...settings,
+        useSelectedSubjs: include ? true : settings.useSelectedSubjs,
+        selectedSubjIds: Array.from(next),
+      });
+    }
+  };
+
+  const clearExamSelectedQuestions = (type: 'mcqs' | 'subjs') => {
+    if (type === 'mcqs') {
+      saveSettings({ ...settings, selectedMcqIds: [] });
+    } else {
+      saveSettings({ ...settings, selectedSubjIds: [] });
+    }
+  };
+
   const [isImportingMcqText, setIsImportingMcqText] = useState(false);
   const [mcqImportText, setMcqImportText] = useState('');
   const [editingMcq, setEditingMcq] = useState<MCQ | null>(null);
@@ -2905,8 +3008,18 @@ function AdminView({
         <div className="space-y-2 flex-1">
           <button onClick={() => setTab('settings')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'settings' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>ตั้งค่าระบบ</button>
           <button onClick={() => setTab('students')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'students' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>จัดการนักเรียน</button>
-          <button onClick={() => setTab('mcqs')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'mcqs' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>คลังข้อสอบ (ปรนัย)</button>
-          <button onClick={() => setTab('subjs')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'subjs' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>คลังข้อสอบ (อัตนัย)</button>
+          <button onClick={() => setTab('mcqs')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between gap-2 ${tab === 'mcqs' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>
+            <span>คลังข้อสอบ (ปรนัย)</span>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${settings.useSelectedMcqs ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-slate-100 text-slate-600'}`}>
+              {settings.useSelectedMcqs ? `${activeExamMcqIds.length}/${mcqs.length}` : mcqs.length}
+            </span>
+          </button>
+          <button onClick={() => setTab('subjs')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between gap-2 ${tab === 'subjs' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>
+            <span>คลังข้อสอบ (อัตนัย)</span>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${settings.useSelectedSubjs ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-slate-100 text-slate-600'}`}>
+              {settings.useSelectedSubjs ? `${activeExamSubjIds.length}/${subjs.length}` : subjs.length}
+            </span>
+          </button>
           <button onClick={() => setTab('grading')} className={`w-full text-left px-4 py-3 rounded-lg ${tab === 'grading' ? 'bg-blue-50 text-blue-900 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}>ตรวจผลสอบ</button>
         </div>
         <button onClick={onLogout} className="mt-auto flex items-center gap-2 text-red-600 px-4 py-2 hover:bg-red-50 rounded-lg">
@@ -3021,134 +3134,236 @@ function AdminView({
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
                   {/* MCQ Limit Card */}
-                  <div className="p-5 rounded-2xl border-2 border-blue-200 bg-white shadow-xs">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="font-bold text-slate-800 text-base flex items-center gap-2">
-                        📝 จำนวนข้อสอบปรนัย (MCQ)
-                      </label>
-                      <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200">
-                        ในคลังมี {mcqs.length} ข้อ
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500 mb-3">
-                      ระบุจำนวนข้อที่ต้องการให้นักเรียนทำ (กรอก 0 หรือเว้นว่างหากต้องการให้นักเรียนทำทั้งหมด)
-                    </p>
-                    
-                    <div className="flex items-center gap-3 mb-3">
-                      <input 
-                        type="number"
-                        min={0}
-                        max={mcqs.length || 1000}
-                        placeholder="ทั้งหมดในคลัง"
-                        value={settings.maxMcqCount || ''}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          saveSettings({ ...settings, maxMcqCount: isNaN(val) || val <= 0 ? 0 : val });
-                        }}
-                        className="w-36 p-2.5 border-2 border-blue-200 rounded-xl font-bold text-lg text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-blue-50/30"
-                      />
-                      <span className="text-sm font-bold text-slate-600">ข้อ</span>
-                      <button
-                        type="button"
-                        onClick={() => saveSettings({ ...settings, maxMcqCount: 0 })}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          !settings.maxMcqCount || settings.maxMcqCount === 0 
-                            ? 'bg-blue-600 text-white shadow-xs' 
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300'
-                        }`}
-                      >
-                        สอบทั้งหมด ({mcqs.length})
-                      </button>
-                    </div>
+                  {(() => {
+                    const effectiveMcqPool = settings.useSelectedMcqs ? activeExamMcqIds.length : mcqs.length;
+                    const expectedMcqTake = settings.maxMcqCount && settings.maxMcqCount > 0 ? Math.min(settings.maxMcqCount, effectiveMcqPool) : effectiveMcqPool;
+                    return (
+                      <div className="p-5 rounded-2xl border-2 border-blue-200 bg-white shadow-xs space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="font-bold text-slate-800 text-base flex items-center gap-2">
+                            📝 ข้อสอบปรนัย (MCQ)
+                          </label>
+                          <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200">
+                            ในคลังมี {mcqs.length} ข้อ
+                          </span>
+                        </div>
 
-                    {/* Preset shortcuts */}
-                    <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
-                      <span className="text-[11px] font-bold text-slate-400">ปุ่มลัดเลือกจำนวน:</span>
-                      {[20, 30, 40, 45, 50, 60].map(cnt => (
-                        <button
-                          key={cnt}
-                          type="button"
-                          onClick={() => saveSettings({ ...settings, maxMcqCount: cnt })}
-                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                            settings.maxMcqCount === cnt 
-                              ? 'bg-blue-600 text-white shadow-xs' 
-                              : 'bg-slate-50 hover:bg-blue-50 text-slate-700 border border-slate-200'
-                          }`}
-                        >
-                          {cnt} ข้อ
-                        </button>
-                      ))}
-                    </div>
+                        {/* Source mode: All vs Teacher-Picked */}
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                          <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                            <span>แหล่งข้อสอบที่จะให้นักเรียนทำ:</span>
+                            <button
+                              type="button"
+                              onClick={() => setTab('mcqs')}
+                              className="text-blue-600 hover:text-blue-800 underline text-xs font-bold cursor-pointer"
+                            >
+                              ไปเลือกข้อสอบปรนัย →
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => saveSettings({ ...settings, useSelectedMcqs: false })}
+                              className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all cursor-pointer text-left ${
+                                !settings.useSelectedMcqs
+                                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                              }`}
+                            >
+                              ใช้ทั้งหมดในคลัง ({mcqs.length})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveSettings({ ...settings, useSelectedMcqs: true })}
+                              className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all cursor-pointer text-left ${
+                                settings.useSelectedMcqs
+                                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                  : 'bg-white text-slate-600 border-slate-300 hover:bg-emerald-50 hover:border-emerald-300'
+                              }`}
+                            >
+                              เฉพาะข้อที่ครูเลือก ({activeExamMcqIds.length})
+                            </button>
+                          </div>
+                          {settings.useSelectedMcqs && activeExamMcqIds.length === 0 && (
+                            <p className="text-[11px] text-amber-700 font-semibold">
+                              ⚠️ ยังไม่ได้เลือกข้อสอบปรนัย กรุณากด "ไปเลือกข้อสอบปรนัย" เพื่อติ๊กเลือกข้อที่ต้องการ
+                            </p>
+                          )}
+                        </div>
 
-                    <div className="mt-3 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
-                      📌 สถานะ: นักเรียนจะได้รับข้อสอบปรนัย <strong className="text-blue-700">{settings.maxMcqCount && settings.maxMcqCount > 0 ? `${Math.min(settings.maxMcqCount, mcqs.length)} ข้อ` : `ทั้งหมด (${mcqs.length} ข้อ)`}</strong>
-                    </div>
-                  </div>
+                        <p className="text-xs text-slate-500">
+                          จำกัดจำนวนข้อที่จะให้นักเรียนทำจากกลุ่มข้างต้น (กรอก 0 หรือเว้นว่างเพื่อทำครบทุกข้อที่เลือกไว้)
+                        </p>
+                        
+                        <div className="flex items-center gap-3">
+                          <input 
+                            type="number"
+                            min={0}
+                            max={effectiveMcqPool || 1000}
+                            placeholder="ครบทั้งหมด"
+                            value={settings.maxMcqCount || ''}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              saveSettings({ ...settings, maxMcqCount: isNaN(val) || val <= 0 ? 0 : val });
+                            }}
+                            className="w-36 p-2.5 border-2 border-blue-200 rounded-xl font-bold text-lg text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-blue-50/30"
+                          />
+                          <span className="text-sm font-bold text-slate-600">ข้อ</span>
+                          <button
+                            type="button"
+                            onClick={() => saveSettings({ ...settings, maxMcqCount: 0 })}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              !settings.maxMcqCount || settings.maxMcqCount === 0 
+                                ? 'bg-blue-600 text-white shadow-xs' 
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300'
+                            }`}
+                          >
+                            ไม่จำกัด ({effectiveMcqPool})
+                          </button>
+                        </div>
+
+                        {/* Preset shortcuts */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
+                          <span className="text-[11px] font-bold text-slate-400">ปุ่มลัดเลือกจำนวน:</span>
+                          {[10, 20, 30, 40, 45, 50].map(cnt => (
+                            <button
+                              key={cnt}
+                              type="button"
+                              onClick={() => saveSettings({ ...settings, maxMcqCount: cnt })}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                settings.maxMcqCount === cnt 
+                                  ? 'bg-blue-600 text-white shadow-xs' 
+                                  : 'bg-slate-50 hover:bg-blue-50 text-slate-700 border border-slate-200'
+                              }`}
+                            >
+                              {cnt} ข้อ
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className={`p-2.5 rounded-xl border text-xs ${settings.useSelectedMcqs ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                          📌 สถานะ: นักเรียนจะได้รับข้อสอบปรนัย <strong className={settings.useSelectedMcqs ? 'text-emerald-700' : 'text-blue-700'}>{expectedMcqTake} ข้อ</strong>{' '}
+                          {settings.useSelectedMcqs ? `(จากที่ครูเลือกไว้ ${activeExamMcqIds.length} ข้อ โดยไม่ลบอีก ${mcqs.length - activeExamMcqIds.length} ข้อ)` : `(จากทั้งหมด ${mcqs.length} ข้อในคลัง)`}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Subjective Limit Card */}
-                  <div className="p-5 rounded-2xl border-2 border-blue-200 bg-white shadow-xs">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="font-bold text-slate-800 text-base flex items-center gap-2">
-                        ✍️ จำนวนข้อสอบอัตนัย (Subjective)
-                      </label>
-                      <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200">
-                        ในคลังมี {subjs.length} ข้อ
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500 mb-3">
-                      ระบุจำนวนข้อเขียนที่ต้องการให้นักเรียนตอบ (กรอก 0 หรือเว้นว่างหากต้องการให้นักเรียนทำทั้งหมด)
-                    </p>
-                    
-                    <div className="flex items-center gap-3 mb-3">
-                      <input 
-                        type="number"
-                        min={0}
-                        max={subjs.length || 1000}
-                        placeholder="ทั้งหมดในคลัง"
-                        value={settings.maxSubjCount || ''}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          saveSettings({ ...settings, maxSubjCount: isNaN(val) || val <= 0 ? 0 : val });
-                        }}
-                        className="w-36 p-2.5 border-2 border-blue-200 rounded-xl font-bold text-lg text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-blue-50/30"
-                      />
-                      <span className="text-sm font-bold text-slate-600">ข้อ</span>
-                      <button
-                        type="button"
-                        onClick={() => saveSettings({ ...settings, maxSubjCount: 0 })}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          !settings.maxSubjCount || settings.maxSubjCount === 0 
-                            ? 'bg-blue-600 text-white shadow-xs' 
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300'
-                        }`}
-                      >
-                        สอบทั้งหมด ({subjs.length})
-                      </button>
-                    </div>
+                  {(() => {
+                    const effectiveSubjPool = settings.useSelectedSubjs ? activeExamSubjIds.length : subjs.length;
+                    const expectedSubjTake = settings.maxSubjCount && settings.maxSubjCount > 0 ? Math.min(settings.maxSubjCount, effectiveSubjPool) : effectiveSubjPool;
+                    return (
+                      <div className="p-5 rounded-2xl border-2 border-blue-200 bg-white shadow-xs space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="font-bold text-slate-800 text-base flex items-center gap-2">
+                            ✍️ ข้อสอบอัตนัย (Subjective)
+                          </label>
+                          <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200">
+                            ในคลังมี {subjs.length} ข้อ
+                          </span>
+                        </div>
 
-                    {/* Preset shortcuts */}
-                    <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
-                      <span className="text-[11px] font-bold text-slate-400">ปุ่มลัดเลือกจำนวน:</span>
-                      {[1, 2, 3, 5, 10].map(cnt => (
-                        <button
-                          key={cnt}
-                          type="button"
-                          onClick={() => saveSettings({ ...settings, maxSubjCount: cnt })}
-                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                            settings.maxSubjCount === cnt 
-                              ? 'bg-blue-600 text-white shadow-xs' 
-                              : 'bg-slate-50 hover:bg-blue-50 text-slate-700 border border-slate-200'
-                          }`}
-                        >
-                          {cnt} ข้อ
-                        </button>
-                      ))}
-                    </div>
+                        {/* Source mode: All vs Teacher-Picked */}
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                          <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                            <span>แหล่งข้อสอบที่จะให้นักเรียนทำ:</span>
+                            <button
+                              type="button"
+                              onClick={() => setTab('subjs')}
+                              className="text-blue-600 hover:text-blue-800 underline text-xs font-bold cursor-pointer"
+                            >
+                              ไปเลือกข้อสอบอัตนัย →
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => saveSettings({ ...settings, useSelectedSubjs: false })}
+                              className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all cursor-pointer text-left ${
+                                !settings.useSelectedSubjs
+                                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                              }`}
+                            >
+                              ใช้ทั้งหมดในคลัง ({subjs.length})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveSettings({ ...settings, useSelectedSubjs: true })}
+                              className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all cursor-pointer text-left ${
+                                settings.useSelectedSubjs
+                                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                  : 'bg-white text-slate-600 border-slate-300 hover:bg-emerald-50 hover:border-emerald-300'
+                              }`}
+                            >
+                              เฉพาะข้อที่ครูเลือก ({activeExamSubjIds.length})
+                            </button>
+                          </div>
+                          {settings.useSelectedSubjs && activeExamSubjIds.length === 0 && (
+                            <p className="text-[11px] text-amber-700 font-semibold">
+                              ⚠️ ยังไม่ได้เลือกข้อสอบอัตนัย กรุณากด "ไปเลือกข้อสอบอัตนัย" เพื่อติ๊กเลือกข้อที่ต้องการ
+                            </p>
+                          )}
+                        </div>
 
-                    <div className="mt-3 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
-                      📌 สถานะ: นักเรียนจะได้รับข้อสอบอัตนัย <strong className="text-blue-700">{settings.maxSubjCount && settings.maxSubjCount > 0 ? `${Math.min(settings.maxSubjCount, subjs.length)} ข้อ` : `ทั้งหมด (${subjs.length} ข้อ)`}</strong>
-                    </div>
-                  </div>
+                        <p className="text-xs text-slate-500">
+                          จำกัดจำนวนข้อเขียนที่จะให้นักเรียนตอบจากกลุ่มข้างต้น (กรอก 0 หรือเว้นว่างเพื่อทำครบทุกข้อที่เลือกไว้)
+                        </p>
+                        
+                        <div className="flex items-center gap-3">
+                          <input 
+                            type="number"
+                            min={0}
+                            max={effectiveSubjPool || 1000}
+                            placeholder="ครบทั้งหมด"
+                            value={settings.maxSubjCount || ''}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              saveSettings({ ...settings, maxSubjCount: isNaN(val) || val <= 0 ? 0 : val });
+                            }}
+                            className="w-36 p-2.5 border-2 border-blue-200 rounded-xl font-bold text-lg text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-blue-50/30"
+                          />
+                          <span className="text-sm font-bold text-slate-600">ข้อ</span>
+                          <button
+                            type="button"
+                            onClick={() => saveSettings({ ...settings, maxSubjCount: 0 })}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              !settings.maxSubjCount || settings.maxSubjCount === 0 
+                                ? 'bg-blue-600 text-white shadow-xs' 
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300'
+                            }`}
+                          >
+                            ไม่จำกัด ({effectiveSubjPool})
+                          </button>
+                        </div>
+
+                        {/* Preset shortcuts */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
+                          <span className="text-[11px] font-bold text-slate-400">ปุ่มลัดเลือกจำนวน:</span>
+                          {[1, 2, 3, 5, 10].map(cnt => (
+                            <button
+                              key={cnt}
+                              type="button"
+                              onClick={() => saveSettings({ ...settings, maxSubjCount: cnt })}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                settings.maxSubjCount === cnt 
+                                  ? 'bg-blue-600 text-white shadow-xs' 
+                                  : 'bg-slate-50 hover:bg-blue-50 text-slate-700 border border-slate-200'
+                              }`}
+                            >
+                              {cnt} ข้อ
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className={`p-2.5 rounded-xl border text-xs ${settings.useSelectedSubjs ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                          📌 สถานะ: นักเรียนจะได้รับข้อสอบอัตนัย <strong className={settings.useSelectedSubjs ? 'text-emerald-700' : 'text-blue-700'}>{expectedSubjTake} ข้อ</strong>{' '}
+                          {settings.useSelectedSubjs ? `(จากที่ครูเลือกไว้ ${activeExamSubjIds.length} ข้อ โดยไม่ลบอีก ${subjs.length - activeExamSubjIds.length} ข้อ)` : `(จากทั้งหมด ${subjs.length} ข้อในคลัง)`}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Selection Mode Selector */}
@@ -3214,11 +3429,21 @@ function AdminView({
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-medium">
                   <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                     <span className="text-slate-500 block">ข้อสอบปรนัย (MCQ):</span>
-                    <span className="font-bold text-slate-800 text-sm">{mcqs.length} ข้อ</span>
+                    <span className="font-bold text-slate-800 text-sm">
+                      {mcqs.length} ข้อ{' '}
+                      {settings.useSelectedMcqs && (
+                        <span className="text-emerald-700 font-bold">(เลือกสอบ {activeExamMcqIds.length})</span>
+                      )}
+                    </span>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                     <span className="text-slate-500 block">ข้อสอบอัตนัย (เขียน):</span>
-                    <span className="font-bold text-slate-800 text-sm">{subjs.length} ข้อ</span>
+                    <span className="font-bold text-slate-800 text-sm">
+                      {subjs.length} ข้อ{' '}
+                      {settings.useSelectedSubjs && (
+                        <span className="text-emerald-700 font-bold">(เลือกสอบ {activeExamSubjIds.length})</span>
+                      )}
+                    </span>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                     <span className="text-slate-500 block">รายชื่อนักเรียน:</span>
@@ -3293,186 +3518,762 @@ function AdminView({
           </div>
         )}
 
-        {tab === 'mcqs' && (
-          <div>
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <h3 className="text-2xl font-bold text-slate-800">คลังข้อสอบ (ปรนัย)</h3>
-                <div className="text-sm text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-                  <span>ทั้งหมด {mcqs.length} ข้อ | เลือก {selectedMcqs.size} ข้อ</span>
-                  {settings.maxMcqCount && settings.maxMcqCount > 0 ? (
-                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                      🎯 ตั้งค่าให้นักเรียนทำ: {settings.maxMcqCount} ข้อ ({settings.questionSelectionMode === 'order' ? 'ตามลำดับ' : 'สุ่มคัดเลือก'})
-                    </span>
-                  ) : (
-                    <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                      ให้นักเรียนทำ: ทั้งหมดในคลัง
-                    </span>
-                  )}
+        {tab === 'mcqs' && (() => {
+          const mcqClassGroups = Array.from(new Set(mcqs.map((m: MCQ) => m.classGroup).filter(Boolean))).sort();
+          const filteredMcqs = mcqs
+            .map((m: MCQ, origIndex: number) => ({ m, origIndex }))
+            .filter(({ m }: { m: MCQ }) => {
+              const isInExam = activeExamMcqSet.has(m.id);
+              if (mcqSelectionFilter === 'active' && !isInExam) return false;
+              if (mcqSelectionFilter === 'inactive' && isInExam) return false;
+              if (mcqClassFilter !== 'all' && m.classGroup !== mcqClassFilter) return false;
+              if (mcqExamTypeFilter !== 'all' && (m.examType || 'general') !== mcqExamTypeFilter) return false;
+              if (mcqSearch.trim()) {
+                const q = mcqSearch.trim().toLowerCase();
+                const inText = m.text.toLowerCase().includes(q);
+                const inOpts = (m.options || []).some(o => o.toLowerCase().includes(q));
+                if (!inText && !inOpts) return false;
+              }
+              return true;
+            });
+
+          const allFilteredChecked = filteredMcqs.length > 0 && filteredMcqs.every(({ m }) => selectedMcqs.has(m.id));
+          const examTypeConflictCount = activeExamMcqIds.filter((id) => {
+            const item = mcqs.find((m: MCQ) => m.id === id);
+            return item && !matchesExamType(item.examType, settings.currentExamType);
+          }).length;
+
+          return (
+            <div>
+              <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 mb-5">
+                <div>
+                  <h3 className="text-2xl font-bold text-slate-800">คลังข้อสอบ (ปรนัย)</h3>
+                  <div className="text-sm text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+                    <span>ในคลังทั้งหมด {mcqs.length} ข้อ</span>
+                    {selectedMcqs.size > 0 && (
+                      <span className="text-blue-700 font-semibold">| ติ๊กจัดการ {selectedMcqs.size} ข้อ</span>
+                    )}
+                    {settings.useSelectedMcqs ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                        ✅ เลือกออกสอบเฉพาะที่ครูเลือก: {activeExamMcqIds.length} จาก {mcqs.length} ข้อ
+                      </span>
+                    ) : settings.maxMcqCount && settings.maxMcqCount > 0 ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        🎯 ตั้งค่าให้นักเรียนทำ: {settings.maxMcqCount} ข้อ ({settings.questionSelectionMode === 'order' ? 'ตามลำดับ' : 'สุ่มคัดเลือก'})
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                        ให้นักเรียนทำ: ทั้งหมดในคลัง
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-2 items-center flex-wrap">
+                  <button onClick={() => setConfirmDeleteAllMcqs(true)} className="flex items-center gap-2 px-3.5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm cursor-pointer">
+                    <Trash2 size={16} /> ลบทั้งหมด
+                  </button>
+                  <button onClick={() => setIsImportingMcqText(true)} className="flex items-center gap-2 px-3.5 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 text-sm cursor-pointer">
+                    <Upload size={16} /> นำเข้าข้อความ
+                  </button>
+                  <label className="flex items-center gap-2 px-3.5 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 text-sm cursor-pointer">
+                    <Upload size={16} /> นำเข้า Word
+                    <input type="file" accept=".docx" className="hidden" onChange={handleImportWord} />
+                  </label>
+                  <button onClick={() => setIsAddingMcq(true)} className="flex items-center gap-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium cursor-pointer">
+                    <Plus size={16} /> เพิ่มข้อสอบ
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-2 items-center flex-wrap">
-                {selectedMcqs.size > 0 && (
-                  <select 
-                    className="border border-blue-200 p-2 rounded-lg bg-white h-[38px] text-sm"
-                    onChange={(e) => {
-                      if (e.target.value) handleBulkChangeExamType('mcqs', e.target.value as any);
-                      e.target.value = '';
-                    }}
+
+              {/* Teacher Question Selection Control Panel (Non-destructive) */}
+              <div className={`mb-5 p-4 sm:p-5 rounded-2xl border-2 transition-all shadow-xs ${
+                settings.useSelectedMcqs
+                  ? 'bg-emerald-50/70 border-emerald-300'
+                  : 'bg-white border-blue-200'
+              }`}>
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <ListChecks size={20} className={settings.useSelectedMcqs ? 'text-emerald-700' : 'text-blue-700'} />
+                      <h4 className="font-bold text-base text-slate-900">
+                        เลือกข้อสอบปรนัยให้นักเรียนทำ (โดยไม่ลบข้อสอบอื่นออกจากคลัง)
+                      </h4>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      {settings.useSelectedMcqs
+                        ? `กำลังใช้งานโหมด "เฉพาะข้อที่ครูเลือก" — นักเรียนจะทำเฉพาะ ${activeExamMcqIds.length} ข้อที่เลือกไว้ (อีก ${mcqs.length - activeExamMcqIds.length} ข้อยังคงเก็บไว้ในคลังอย่างปลอดภัย)`
+                        : `ตอนนี้ระบบใช้ข้อสอบทั้งหมดในคลัง (${mcqs.length} ข้อ) — คุณครูสามารถกดปุ่ม "+ เลือกออกสอบ" ที่ข้อสอบด้านล่าง หรือสลับโหมดด้านขวาเพื่อคัดเลือกเฉพาะบางข้อได้ทันที`}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => saveSettings({ ...settings, useSelectedMcqs: false })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          !settings.useSelectedMcqs
+                            ? 'bg-blue-600 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        ใช้ทั้งหมดในคลัง ({mcqs.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => saveSettings({ ...settings, useSelectedMcqs: true })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          settings.useSelectedMcqs
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-emerald-800'
+                        }`}
+                      >
+                        ใช้เฉพาะที่ครูเลือก ({activeExamMcqIds.length})
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Warnings & Quick Selection Utilities */}
+                <div className="mt-3 pt-3 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {settings.useSelectedMcqs && activeExamMcqIds.length === 0 && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-bold">
+                        <AlertCircle size={14} /> ยังไม่ได้เลือกข้อสอบเลย! กดปุ่ม "+ เลือกออกสอบ" ในรายการด้านล่าง
+                      </span>
+                    )}
+                    {settings.useSelectedMcqs && settings.maxMcqCount && settings.maxMcqCount > 0 && settings.maxMcqCount < activeExamMcqIds.length && (
+                      <span className="inline-flex items-center gap-2 px-3 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-300 font-medium">
+                        <span>⚠️ ตั้งจำกัดจำนวนไว้ที่ {settings.maxMcqCount} ข้อ (จากที่เลือก {activeExamMcqIds.length} ข้อ)</span>
+                        <button
+                          type="button"
+                          onClick={() => saveSettings({ ...settings, maxMcqCount: 0 })}
+                          className="underline font-bold text-blue-700 hover:text-blue-900 cursor-pointer"
+                        >
+                          ปรับให้ทำครบทั้ง {activeExamMcqIds.length} ข้อ
+                        </button>
+                      </span>
+                    )}
+                    {settings.useSelectedMcqs && examTypeConflictCount > 0 && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-300 font-medium">
+                        ⚠️ มี {examTypeConflictCount} ข้อที่เลือกไว้ไม่ตรงกับประเภทชุดสอบปัจจุบัน ({settings.currentExamType === 'midterm' ? 'กลางภาค' : 'ปลายภาค'})
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => bulkSetExamQuestions('mcqs', filteredMcqs.map(({ m }) => m.id), true)}
+                      disabled={filteredMcqs.length === 0}
+                      className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-300 transition-colors cursor-pointer disabled:opacity-40"
+                    >
+                      + เลือกทั้งหมดที่แสดง ({filteredMcqs.length}) ออกสอบ
+                    </button>
+                    {activeExamMcqIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => clearExamSelectedQuestions('mcqs')}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white hover:bg-red-50 text-red-600 border border-red-200 transition-colors cursor-pointer"
+                      >
+                        ล้างที่เลือกออกสอบทั้งหมด ({activeExamMcqIds.length})
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Filter & Search Bar */}
+              <div className="bg-white p-3.5 rounded-xl border border-blue-200 mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex rounded-lg bg-slate-100 p-0.5 border border-slate-200 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setMcqSelectionFilter('all')}
+                      className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${mcqSelectionFilter === 'all' ? 'bg-white text-blue-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+                    >
+                      ทั้งหมด ({mcqs.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMcqSelectionFilter('active')}
+                      className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${mcqSelectionFilter === 'active' ? 'bg-emerald-600 text-white shadow-2xs' : 'text-slate-600 hover:text-emerald-700'}`}
+                    >
+                      เลือกออกสอบแล้ว ({activeExamMcqIds.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMcqSelectionFilter('inactive')}
+                      className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${mcqSelectionFilter === 'inactive' ? 'bg-slate-700 text-white shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+                    >
+                      ยังไม่ได้เลือก ({mcqs.length - activeExamMcqIds.length})
+                    </button>
+                  </div>
+
+                  <select
+                    value={mcqClassFilter}
+                    onChange={(e) => setMcqClassFilter(e.target.value)}
+                    className="border border-slate-200 px-2.5 py-1.5 rounded-lg bg-slate-50 text-xs font-medium text-slate-700"
                   >
-                    <option value="">เปลี่ยนประเภทที่เลือก...</option>
+                    <option value="all">ทุกห้องเรียน</option>
+                    {mcqClassGroups.map((cls: any) => (
+                      <option key={cls} value={cls}>ม.{cls}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={mcqExamTypeFilter}
+                    onChange={(e) => setMcqExamTypeFilter(e.target.value)}
+                    className="border border-slate-200 px-2.5 py-1.5 rounded-lg bg-slate-50 text-xs font-medium text-slate-700"
+                  >
+                    <option value="all">ทุกประเภท</option>
                     <option value="general">ทั่วไป</option>
                     <option value="midterm">กลางภาค</option>
                     <option value="final">ปลายภาค</option>
                   </select>
-                )}
-                <button onClick={() => {
-                  if (selectedMcqs.size === mcqs.length && mcqs.length > 0) setSelectedMcqs(new Set());
-                  else setSelectedMcqs(new Set(mcqs.map((m: MCQ) => m.id)));
-                }} className="px-4 py-2 border border-blue-200 text-slate-500 rounded-lg hover:bg-slate-50 text-sm h-[38px]">
-                  {selectedMcqs.size === mcqs.length && mcqs.length > 0 ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมด'}
-                </button>
-                <button onClick={() => setConfirmDeleteAllMcqs(true)} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm">
-                  <Trash2 size={16} /> ลบทั้งหมด
-                </button>
-                <button onClick={() => setIsImportingMcqText(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 text-sm">
-                  <Upload size={16} /> นำเข้าข้อความ
-                </button>
-                <label className="flex items-center gap-2 px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 text-sm cursor-pointer">
-                  <Upload size={16} /> นำเข้า Word
-                  <input type="file" accept=".docx" className="hidden" onChange={handleImportWord} />
-                </label>
-                <button onClick={() => setIsAddingMcq(true)} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg hover:bg-black text-sm">
-                  <Plus size={16} /> เพิ่มข้อสอบ
-                </button>
+                </div>
+
+                <div className="flex items-center gap-2 flex-1 sm:flex-initial min-w-[220px]">
+                  <div className="relative flex-1">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      value={mcqSearch}
+                      onChange={(e) => setMcqSearch(e.target.value)}
+                      placeholder="ค้นหาคำถามหรือตัวเลือก..."
+                      className="w-full pl-8 pr-8 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-300 bg-slate-50"
+                    />
+                    {mcqSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setMcqSearch('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (allFilteredChecked) {
+                        const next = new Set(selectedMcqs);
+                        filteredMcqs.forEach(({ m }) => next.delete(m.id));
+                        setSelectedMcqs(next);
+                      } else {
+                        setSelectedMcqs(new Set([...selectedMcqs, ...filteredMcqs.map(({ m }) => m.id)]));
+                      }
+                    }}
+                    className="px-3 py-1.5 border border-blue-200 text-slate-600 rounded-lg hover:bg-slate-50 text-xs font-medium shrink-0 cursor-pointer"
+                  >
+                    {allFilteredChecked ? 'ยกเลิกติ๊กหน้านี้' : 'ติ๊กทั้งหมดหน้านี้'}
+                  </button>
+                </div>
               </div>
-            </div>
-            <div className="space-y-4">
-              {mcqs.map((m: MCQ, i: number) => (
-                <div key={m.id} className="bg-white p-6 rounded-xl border border-blue-200 shadow-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="checkbox" 
-                        className="w-5 h-5 rounded border-blue-300 text-blue-600 focus:ring-blue-500"
-                        checked={selectedMcqs.has(m.id)}
-                        onChange={(e) => {
-                          const newSet = new Set(selectedMcqs);
-                          if (e.target.checked) newSet.add(m.id);
-                          else newSet.delete(m.id);
-                          setSelectedMcqs(newSet);
-                        }}
-                      />
-                      <div className="flex gap-2">
-                        <span className="bg-blue-50 px-3 py-1 rounded text-sm text-blue-900">ม.{m.classGroup}</span>
-                        <span className="bg-red-100 text-red-800 px-3 py-1 rounded text-sm text-blue-900">{m.examType === 'midterm' ? 'กลางภาค' : m.examType === 'final' ? 'ปลายภาค' : 'ทั่วไป'}</span>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => setEditingMcq(m)} className="text-slate-500 hover:text-blue-600"><Edit2 size={18} /></button>
-                      <button onClick={() => setMcqToDelete(m)} className="text-slate-500 hover:text-red-600"><Trash2 size={18} /></button>
-                    </div>
+
+              {/* Bulk Checkbox Action Bar */}
+              {selectedMcqs.size > 0 && (
+                <div className="mb-4 p-3 rounded-xl bg-blue-50 border border-blue-300 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-blue-900">
+                    ติ๊กเลือกไว้ {selectedMcqs.size} ข้อ — เลือกคำสั่งจัดการแบบกลุ่ม:
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        bulkSetExamQuestions('mcqs', Array.from(selectedMcqs), true);
+                        setSelectedMcqs(new Set());
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+                    >
+                      ✅ เพิ่มเข้าชุดสอบ ({selectedMcqs.size} ข้อ)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        bulkSetExamQuestions('mcqs', Array.from(selectedMcqs), false);
+                        setSelectedMcqs(new Set());
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold cursor-pointer"
+                    >
+                      ⭕ นำออกจากชุดสอบ ({selectedMcqs.size} ข้อ)
+                    </button>
+                    <select 
+                      className="border border-blue-300 px-2.5 py-1.5 rounded-lg bg-white text-xs font-medium"
+                      onChange={(e) => {
+                        if (e.target.value) handleBulkChangeExamType('mcqs', e.target.value as any);
+                        e.target.value = '';
+                      }}
+                    >
+                      <option value="">เปลี่ยนประเภทที่ติ๊ก...</option>
+                      <option value="general">ทั่วไป</option>
+                      <option value="midterm">กลางภาค</option>
+                      <option value="final">ปลายภาค</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMcqs(new Set())}
+                      className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 text-xs font-medium cursor-pointer"
+                    >
+                      ยกเลิก
+                    </button>
                   </div>
-                  <div className="font-medium mb-4 text-slate-800">
-                    <FormattedText text={m.text} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-sm text-slate-500">
-                    {(m.options || []).map((opt, idx) => (
-                      <div key={idx} className={idx === m.correctIndex ? 'text-green-700 font-bold bg-green-50 p-2.5 rounded-lg border border-green-200' : 'p-2'}>
-                        <div className="flex items-start gap-1.5">
-                          <span className="shrink-0 font-bold select-none">-</span>
-                          <FormattedText text={opt} className="flex-1" />
+                </div>
+              )}
+
+              <div className="space-y-4">
+                {filteredMcqs.map(({ m, origIndex }: { m: MCQ; origIndex: number }) => {
+                  const isInExam = activeExamMcqSet.has(m.id);
+                  const hasTypeConflict = settings.useSelectedMcqs && isInExam && !matchesExamType(m.examType, settings.currentExamType);
+                  return (
+                    <div
+                      key={m.id}
+                      className={`p-6 rounded-xl border-2 shadow-xs transition-all ${
+                        isInExam
+                          ? 'bg-emerald-50/30 border-emerald-400'
+                          : 'bg-white border-blue-200'
+                      }`}
+                    >
+                      <div className="flex flex-wrap justify-between items-start gap-3 mb-4">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <input 
+                            type="checkbox" 
+                            className="w-5 h-5 rounded border-blue-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            checked={selectedMcqs.has(m.id)}
+                            onChange={(e) => {
+                              const newSet = new Set(selectedMcqs);
+                              if (e.target.checked) newSet.add(m.id);
+                              else newSet.delete(m.id);
+                              setSelectedMcqs(newSet);
+                            }}
+                          />
+                          <span className="font-bold text-sm text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200">
+                            ข้อที่ {origIndex + 1}
+                          </span>
+                          <div className="flex gap-2 flex-wrap">
+                            <span className="bg-blue-50 px-3 py-1 rounded text-sm text-blue-900">ม.{m.classGroup}</span>
+                            <span className="bg-red-100 text-red-800 px-3 py-1 rounded text-sm">{m.examType === 'midterm' ? 'กลางภาค' : m.examType === 'final' ? 'ปลายภาค' : 'ทั่วไป'}</span>
+                            {hasTypeConflict && (
+                              <span className="bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-1 rounded text-xs font-bold">
+                                ⚠️ ไม่ตรงกับประเภทชุดสอบปัจจุบัน
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleExamQuestion('mcqs', m.id)}
+                            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                              isInExam
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-xs'
+                                : 'bg-white hover:bg-emerald-50 text-slate-600 hover:text-emerald-800 border-slate-300 hover:border-emerald-400'
+                            }`}
+                            title={isInExam ? 'คลิกเพื่อนำออกจากชุดข้อสอบที่จะให้นักเรียนทำ (ไม่ลบออกจากคลัง)' : 'คลิกเพื่อเลือกข้อนี้ให้นักเรียนทำ'}
+                          >
+                            {isInExam ? <CheckCircle2 size={15} /> : <Plus size={15} />}
+                            <span>{isInExam ? 'เลือกออกสอบแล้ว' : 'เลือกออกสอบ'}</span>
+                          </button>
+                          <button onClick={() => setEditingMcq(m)} className="p-1.5 text-slate-500 hover:text-blue-600 cursor-pointer" title="แก้ไขข้อสอบ"><Edit2 size={18} /></button>
+                          <button onClick={() => setMcqToDelete(m)} className="p-1.5 text-slate-500 hover:text-red-600 cursor-pointer" title="ลบข้อสอบออกจากคลัง"><Trash2 size={18} /></button>
                         </div>
                       </div>
-                    ))}
+                      <div className="font-medium mb-4 text-slate-800">
+                        <FormattedText text={m.text} />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-slate-500">
+                        {(m.options || []).map((opt, idx) => (
+                          <div key={idx} className={idx === m.correctIndex ? 'text-green-700 font-bold bg-green-50 p-2.5 rounded-lg border border-green-200' : 'p-2'}>
+                            <div className="flex items-start gap-1.5">
+                              <span className="shrink-0 font-bold select-none">-</span>
+                              <FormattedText text={opt} className="flex-1" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                {filteredMcqs.length === 0 && (
+                  <div className="bg-white p-12 rounded-xl border border-slate-200 text-center text-slate-500">
+                    <AlertCircle size={32} className="mx-auto mb-2 text-slate-400" />
+                    <div className="font-bold">ไม่พบข้อสอบปรนัยตามตัวกรองที่เลือก</div>
+                    <div className="text-xs text-slate-400 mt-1">ลองเปลี่ยนตัวกรองหรือคำค้นหา</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {tab === 'subjs' && (() => {
+          const subjClassGroups = Array.from(new Set(subjs.map((s: Subjective) => s.classGroup).filter(Boolean))).sort();
+          const filteredSubjs = subjs
+            .map((s: Subjective, origIndex: number) => ({ s, origIndex }))
+            .filter(({ s }: { s: Subjective }) => {
+              const isInExam = activeExamSubjSet.has(s.id);
+              if (subjSelectionFilter === 'active' && !isInExam) return false;
+              if (subjSelectionFilter === 'inactive' && isInExam) return false;
+              if (subjClassFilter !== 'all' && s.classGroup !== subjClassFilter) return false;
+              if (subjExamTypeFilter !== 'all' && (s.examType || 'general') !== subjExamTypeFilter) return false;
+              if (subjSearch.trim()) {
+                const q = subjSearch.trim().toLowerCase();
+                if (!s.text.toLowerCase().includes(q)) return false;
+              }
+              return true;
+            });
+
+          const allFilteredChecked = filteredSubjs.length > 0 && filteredSubjs.every(({ s }) => selectedSubjs.has(s.id));
+          const examTypeConflictCount = activeExamSubjIds.filter((id) => {
+            const item = subjs.find((s: Subjective) => s.id === id);
+            return item && !matchesExamType(item.examType, settings.currentExamType);
+          }).length;
+
+          return (
+            <div>
+              <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 mb-5">
+                <div>
+                  <h3 className="text-2xl font-bold text-slate-800">คลังข้อสอบ (อัตนัย)</h3>
+                  <div className="text-sm text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+                    <span>ในคลังทั้งหมด {subjs.length} ข้อ</span>
+                    {selectedSubjs.size > 0 && (
+                      <span className="text-blue-700 font-semibold">| ติ๊กจัดการ {selectedSubjs.size} ข้อ</span>
+                    )}
+                    {settings.useSelectedSubjs ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                        ✅ เลือกออกสอบเฉพาะที่ครูเลือก: {activeExamSubjIds.length} จาก {subjs.length} ข้อ
+                      </span>
+                    ) : settings.maxSubjCount && settings.maxSubjCount > 0 ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        🎯 ตั้งค่าให้นักเรียนทำ: {settings.maxSubjCount} ข้อ ({settings.questionSelectionMode === 'order' ? 'ตามลำดับ' : 'สุ่มคัดเลือก'})
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                        ให้นักเรียนทำ: ทั้งหมดในคลัง
+                      </span>
+                    )}
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {tab === 'subjs' && (
-          <div>
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <h3 className="text-2xl font-bold text-slate-800">คลังข้อสอบ (อัตนัย)</h3>
-                <div className="text-sm text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-                  <span>ทั้งหมด {subjs.length} ข้อ | เลือก {selectedSubjs.size} ข้อ</span>
-                  {settings.maxSubjCount && settings.maxSubjCount > 0 ? (
-                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                      🎯 ตั้งค่าให้นักเรียนทำ: {settings.maxSubjCount} ข้อ ({settings.questionSelectionMode === 'order' ? 'ตามลำดับ' : 'สุ่มคัดเลือก'})
-                    </span>
-                  ) : (
-                    <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                      ให้นักเรียนทำ: ทั้งหมดในคลัง
-                    </span>
-                  )}
+                <div className="flex gap-2 items-center flex-wrap">
+                  <button onClick={() => setConfirmDeleteAllSubjs(true)} className="flex items-center gap-2 px-3.5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm cursor-pointer">
+                    <Trash2 size={16} /> ลบทั้งหมด
+                  </button>
+                  <button onClick={() => setIsAddingSubj(true)} className="flex items-center gap-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium cursor-pointer">
+                    <Plus size={16} /> เพิ่มข้อสอบ
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-2 items-center">
-                {selectedSubjs.size > 0 && (
-                  <select 
-                    className="border border-blue-200 p-2 rounded-lg bg-white h-[38px] text-sm"
-                    onChange={(e) => {
-                      if (e.target.value) handleBulkChangeExamType('subjs', e.target.value as any);
-                      e.target.value = '';
-                    }}
+
+              {/* Teacher Question Selection Control Panel (Non-destructive) */}
+              <div className={`mb-5 p-4 sm:p-5 rounded-2xl border-2 transition-all shadow-xs ${
+                settings.useSelectedSubjs
+                  ? 'bg-emerald-50/70 border-emerald-300'
+                  : 'bg-white border-blue-200'
+              }`}>
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <ListChecks size={20} className={settings.useSelectedSubjs ? 'text-emerald-700' : 'text-blue-700'} />
+                      <h4 className="font-bold text-base text-slate-900">
+                        เลือกข้อสอบอัตนัยให้นักเรียนทำ (โดยไม่ลบข้อสอบอื่นออกจากคลัง)
+                      </h4>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      {settings.useSelectedSubjs
+                        ? `กำลังใช้งานโหมด "เฉพาะข้อที่ครูเลือก" — นักเรียนจะทำเฉพาะ ${activeExamSubjIds.length} ข้อที่เลือกไว้ (อีก ${subjs.length - activeExamSubjIds.length} ข้อยังคงเก็บไว้ในคลังอย่างปลอดภัย)`
+                        : `ตอนนี้ระบบใช้ข้อสอบทั้งหมดในคลัง (${subjs.length} ข้อ) — คุณครูสามารถกดปุ่ม "+ เลือกออกสอบ" ที่ข้อสอบด้านล่าง หรือสลับโหมดด้านขวาเพื่อคัดเลือกเฉพาะบางข้อได้ทันที`}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => saveSettings({ ...settings, useSelectedSubjs: false })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          !settings.useSelectedSubjs
+                            ? 'bg-blue-600 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        ใช้ทั้งหมดในคลัง ({subjs.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => saveSettings({ ...settings, useSelectedSubjs: true })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          settings.useSelectedSubjs
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-emerald-800'
+                        }`}
+                      >
+                        ใช้เฉพาะที่ครูเลือก ({activeExamSubjIds.length})
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Warnings & Quick Selection Utilities */}
+                <div className="mt-3 pt-3 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {settings.useSelectedSubjs && activeExamSubjIds.length === 0 && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-bold">
+                        <AlertCircle size={14} /> ยังไม่ได้เลือกข้อสอบเลย! กดปุ่ม "+ เลือกออกสอบ" ในรายการด้านล่าง
+                      </span>
+                    )}
+                    {settings.useSelectedSubjs && settings.maxSubjCount && settings.maxSubjCount > 0 && settings.maxSubjCount < activeExamSubjIds.length && (
+                      <span className="inline-flex items-center gap-2 px-3 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-300 font-medium">
+                        <span>⚠️ ตั้งจำกัดจำนวนไว้ที่ {settings.maxSubjCount} ข้อ (จากที่เลือก {activeExamSubjIds.length} ข้อ)</span>
+                        <button
+                          type="button"
+                          onClick={() => saveSettings({ ...settings, maxSubjCount: 0 })}
+                          className="underline font-bold text-blue-700 hover:text-blue-900 cursor-pointer"
+                        >
+                          ปรับให้ทำครบทั้ง {activeExamSubjIds.length} ข้อ
+                        </button>
+                      </span>
+                    )}
+                    {settings.useSelectedSubjs && examTypeConflictCount > 0 && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-300 font-medium">
+                        ⚠️ มี {examTypeConflictCount} ข้อที่เลือกไว้ไม่ตรงกับประเภทชุดสอบปัจจุบัน ({settings.currentExamType === 'midterm' ? 'กลางภาค' : 'ปลายภาค'})
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => bulkSetExamQuestions('subjs', filteredSubjs.map(({ s }) => s.id), true)}
+                      disabled={filteredSubjs.length === 0}
+                      className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-300 transition-colors cursor-pointer disabled:opacity-40"
+                    >
+                      + เลือกทั้งหมดที่แสดง ({filteredSubjs.length}) ออกสอบ
+                    </button>
+                    {activeExamSubjIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => clearExamSelectedQuestions('subjs')}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white hover:bg-red-50 text-red-600 border border-red-200 transition-colors cursor-pointer"
+                      >
+                        ล้างที่เลือกออกสอบทั้งหมด ({activeExamSubjIds.length})
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Filter & Search Bar */}
+              <div className="bg-white p-3.5 rounded-xl border border-blue-200 mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex rounded-lg bg-slate-100 p-0.5 border border-slate-200 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setSubjSelectionFilter('all')}
+                      className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${subjSelectionFilter === 'all' ? 'bg-white text-blue-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+                    >
+                      ทั้งหมด ({subjs.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSubjSelectionFilter('active')}
+                      className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${subjSelectionFilter === 'active' ? 'bg-emerald-600 text-white shadow-2xs' : 'text-slate-600 hover:text-emerald-700'}`}
+                    >
+                      เลือกออกสอบแล้ว ({activeExamSubjIds.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSubjSelectionFilter('inactive')}
+                      className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${subjSelectionFilter === 'inactive' ? 'bg-slate-700 text-white shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+                    >
+                      ยังไม่ได้เลือก ({subjs.length - activeExamSubjIds.length})
+                    </button>
+                  </div>
+
+                  <select
+                    value={subjClassFilter}
+                    onChange={(e) => setSubjClassFilter(e.target.value)}
+                    className="border border-slate-200 px-2.5 py-1.5 rounded-lg bg-slate-50 text-xs font-medium text-slate-700"
                   >
-                    <option value="">เปลี่ยนประเภทที่เลือก...</option>
+                    <option value="all">ทุกห้องเรียน</option>
+                    {subjClassGroups.map((cls: any) => (
+                      <option key={cls} value={cls}>ม.{cls}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={subjExamTypeFilter}
+                    onChange={(e) => setSubjExamTypeFilter(e.target.value)}
+                    className="border border-slate-200 px-2.5 py-1.5 rounded-lg bg-slate-50 text-xs font-medium text-slate-700"
+                  >
+                    <option value="all">ทุกประเภท</option>
                     <option value="general">ทั่วไป</option>
                     <option value="midterm">กลางภาค</option>
                     <option value="final">ปลายภาค</option>
                   </select>
-                )}
-                <button onClick={() => {
-                  if (selectedSubjs.size === subjs.length && subjs.length > 0) setSelectedSubjs(new Set());
-                  else setSelectedSubjs(new Set(subjs.map((s: Subjective) => s.id)));
-                }} className="px-4 py-2 border border-blue-200 text-slate-500 rounded-lg hover:bg-slate-50 text-sm">
-                  {selectedSubjs.size === subjs.length && subjs.length > 0 ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมด'}
-                </button>
-                <button onClick={() => setConfirmDeleteAllSubjs(true)} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm">
-                  <Trash2 size={16} /> ลบทั้งหมด
-                </button>
-                <button onClick={() => setIsAddingSubj(true)} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg hover:bg-black text-sm">
-                  <Plus size={16} /> เพิ่มข้อสอบ
-                </button>
-              </div>
-            </div>
-            <div className="space-y-4">
-              {subjs.map((s: Subjective, i: number) => (
-                <div key={s.id} className="bg-white p-6 rounded-xl border border-blue-200 shadow-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="checkbox" 
-                        className="w-5 h-5 rounded border-blue-300 text-blue-600 focus:ring-blue-500"
-                        checked={selectedSubjs.has(s.id)}
-                        onChange={(e) => {
-                          const newSet = new Set(selectedSubjs);
-                          if (e.target.checked) newSet.add(s.id);
-                          else newSet.delete(s.id);
-                          setSelectedSubjs(newSet);
-                        }}
-                      />
-                      <div className="flex gap-2">
-                        <span className="bg-blue-50 px-3 py-1 rounded text-sm text-blue-900">ม.{s.classGroup}</span>
-                        <span className="bg-red-100 text-red-800 px-3 py-1 rounded text-sm text-blue-900">{s.examType === 'midterm' ? 'กลางภาค' : s.examType === 'final' ? 'ปลายภาค' : 'ทั่วไป'}</span>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => setEditingSubj(s)} className="text-slate-500 hover:text-blue-600"><Edit2 size={18} /></button>
-                      <button onClick={() => setSubjToDelete(s)} className="text-slate-500 hover:text-red-600"><Trash2 size={18} /></button>
-                    </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-1 sm:flex-initial min-w-[220px]">
+                  <div className="relative flex-1">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      value={subjSearch}
+                      onChange={(e) => setSubjSearch(e.target.value)}
+                      placeholder="ค้นหาคำถามอัตนัย..."
+                      className="w-full pl-8 pr-8 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-300 bg-slate-50"
+                    />
+                    {subjSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setSubjSearch('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
-                  <div className="font-medium mb-4 text-slate-800">
-                    <FormattedText text={s.text} />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (allFilteredChecked) {
+                        const next = new Set(selectedSubjs);
+                        filteredSubjs.forEach(({ s }) => next.delete(s.id));
+                        setSelectedSubjs(next);
+                      } else {
+                        setSelectedSubjs(new Set([...selectedSubjs, ...filteredSubjs.map(({ s }) => s.id)]));
+                      }
+                    }}
+                    className="px-3 py-1.5 border border-blue-200 text-slate-600 rounded-lg hover:bg-slate-50 text-xs font-medium shrink-0 cursor-pointer"
+                  >
+                    {allFilteredChecked ? 'ยกเลิกติ๊กหน้านี้' : 'ติ๊กทั้งหมดหน้านี้'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Bulk Checkbox Action Bar */}
+              {selectedSubjs.size > 0 && (
+                <div className="mb-4 p-3 rounded-xl bg-blue-50 border border-blue-300 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-blue-900">
+                    ติ๊กเลือกไว้ {selectedSubjs.size} ข้อ — เลือกคำสั่งจัดการแบบกลุ่ม:
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        bulkSetExamQuestions('subjs', Array.from(selectedSubjs), true);
+                        setSelectedSubjs(new Set());
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+                    >
+                      ✅ เพิ่มเข้าชุดสอบ ({selectedSubjs.size} ข้อ)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        bulkSetExamQuestions('subjs', Array.from(selectedSubjs), false);
+                        setSelectedSubjs(new Set());
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold cursor-pointer"
+                    >
+                      ⭕ นำออกจากชุดสอบ ({selectedSubjs.size} ข้อ)
+                    </button>
+                    <select 
+                      className="border border-blue-300 px-2.5 py-1.5 rounded-lg bg-white text-xs font-medium"
+                      onChange={(e) => {
+                        if (e.target.value) handleBulkChangeExamType('subjs', e.target.value as any);
+                        e.target.value = '';
+                      }}
+                    >
+                      <option value="">เปลี่ยนประเภทที่ติ๊ก...</option>
+                      <option value="general">ทั่วไป</option>
+                      <option value="midterm">กลางภาค</option>
+                      <option value="final">ปลายภาค</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSubjs(new Set())}
+                      className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 text-xs font-medium cursor-pointer"
+                    >
+                      ยกเลิก
+                    </button>
                   </div>
                 </div>
-              ))}
+              )}
+
+              <div className="space-y-4">
+                {filteredSubjs.map(({ s, origIndex }: { s: Subjective; origIndex: number }) => {
+                  const isInExam = activeExamSubjSet.has(s.id);
+                  const hasTypeConflict = settings.useSelectedSubjs && isInExam && !matchesExamType(s.examType, settings.currentExamType);
+                  return (
+                    <div
+                      key={s.id}
+                      className={`p-6 rounded-xl border-2 shadow-xs transition-all ${
+                        isInExam
+                          ? 'bg-emerald-50/30 border-emerald-400'
+                          : 'bg-white border-blue-200'
+                      }`}
+                    >
+                      <div className="flex flex-wrap justify-between items-start gap-3 mb-4">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <input 
+                            type="checkbox" 
+                            className="w-5 h-5 rounded border-blue-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            checked={selectedSubjs.has(s.id)}
+                            onChange={(e) => {
+                              const newSet = new Set(selectedSubjs);
+                              if (e.target.checked) newSet.add(s.id);
+                              else newSet.delete(s.id);
+                              setSelectedSubjs(newSet);
+                            }}
+                          />
+                          <span className="font-bold text-sm text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200">
+                            ข้อที่ {origIndex + 1}
+                          </span>
+                          <div className="flex gap-2 flex-wrap">
+                            <span className="bg-blue-50 px-3 py-1 rounded text-sm text-blue-900">ม.{s.classGroup}</span>
+                            <span className="bg-red-100 text-red-800 px-3 py-1 rounded text-sm">{s.examType === 'midterm' ? 'กลางภาค' : s.examType === 'final' ? 'ปลายภาค' : 'ทั่วไป'}</span>
+                            {hasTypeConflict && (
+                              <span className="bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-1 rounded text-xs font-bold">
+                                ⚠️ ไม่ตรงกับประเภทชุดสอบปัจจุบัน
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleExamQuestion('subjs', s.id)}
+                            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                              isInExam
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-xs'
+                                : 'bg-white hover:bg-emerald-50 text-slate-600 hover:text-emerald-800 border-slate-300 hover:border-emerald-400'
+                            }`}
+                            title={isInExam ? 'คลิกเพื่อนำออกจากชุดข้อสอบที่จะให้นักเรียนทำ (ไม่ลบออกจากคลัง)' : 'คลิกเพื่อเลือกข้อนี้ให้นักเรียนทำ'}
+                          >
+                            {isInExam ? <CheckCircle2 size={15} /> : <Plus size={15} />}
+                            <span>{isInExam ? 'เลือกออกสอบแล้ว' : 'เลือกออกสอบ'}</span>
+                          </button>
+                          <button onClick={() => setEditingSubj(s)} className="p-1.5 text-slate-500 hover:text-blue-600 cursor-pointer" title="แก้ไขข้อสอบ"><Edit2 size={18} /></button>
+                          <button onClick={() => setSubjToDelete(s)} className="p-1.5 text-slate-500 hover:text-red-600 cursor-pointer" title="ลบข้อสอบออกจากคลัง"><Trash2 size={18} /></button>
+                        </div>
+                      </div>
+                      <div className="font-medium text-slate-800">
+                        <FormattedText text={s.text} />
+                      </div>
+                    </div>
+                  );
+                })}
+                {filteredSubjs.length === 0 && (
+                  <div className="bg-white p-12 rounded-xl border border-slate-200 text-center text-slate-500">
+                    <AlertCircle size={32} className="mx-auto mb-2 text-slate-400" />
+                    <div className="font-bold">ไม่พบข้อสอบอัตนัยตามตัวกรองที่เลือก</div>
+                    <div className="text-xs text-slate-400 mt-1">ลองเปลี่ยนตัวกรองหรือคำค้นหา</div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {tab === 'grading' && (() => {
           const visibleSubmissions = submissions
@@ -4106,6 +4907,12 @@ function AdminView({
               <button onClick={() => setMcqToDelete(null)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
                 setMcqs(mcqs.filter((m: MCQ) => m.id !== mcqToDelete.id));
+                if (activeExamMcqSet.has(mcqToDelete.id)) {
+                  saveSettings({
+                    ...settings,
+                    selectedMcqIds: activeExamMcqIds.filter((id) => id !== mcqToDelete.id),
+                  });
+                }
                 setMcqToDelete(null);
               }} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">ลบข้อสอบ</button>
             </div>
@@ -4194,6 +5001,12 @@ function AdminView({
               <button onClick={() => setSubjToDelete(null)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
                 setSubjs(subjs.filter((s: Subjective) => s.id !== subjToDelete.id));
+                if (activeExamSubjSet.has(subjToDelete.id)) {
+                  saveSettings({
+                    ...settings,
+                    selectedSubjIds: activeExamSubjIds.filter((id) => id !== subjToDelete.id),
+                  });
+                }
                 setSubjToDelete(null);
               }} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">ลบข้อสอบ</button>
             </div>
@@ -4213,6 +5026,9 @@ function AdminView({
               <button onClick={() => setConfirmDeleteAllMcqs(false)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
                 setMcqs([]);
+                if (activeExamMcqIds.length > 0) {
+                  saveSettings({ ...settings, selectedMcqIds: [] });
+                }
                 setConfirmDeleteAllMcqs(false);
               }} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">ยืนยันการลบทั้งหมด</button>
             </div>
@@ -4232,6 +5048,9 @@ function AdminView({
               <button onClick={() => setConfirmDeleteAllSubjs(false)} className="px-4 py-2 border border-blue-200 text-slate-500 rounded hover:bg-slate-50">ยกเลิก</button>
               <button onClick={() => {
                 setSubjs([]);
+                if (activeExamSubjIds.length > 0) {
+                  saveSettings({ ...settings, selectedSubjIds: [] });
+                }
                 setConfirmDeleteAllSubjs(false);
               }} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">ยืนยันการลบทั้งหมด</button>
             </div>
